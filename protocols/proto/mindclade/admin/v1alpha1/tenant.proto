@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package mindclade.admin.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/admin/v1alpha1;adminv1alpha1";
+
+message Tenant {
+  string tenant_id = 1;
+  string display_name = 2;
+  int64 monthly_gpu_millisecond_budget = 3;
+  bool suspended = 4;
+}

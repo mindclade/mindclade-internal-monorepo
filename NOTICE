@@ -1,0 +1,6 @@
+Mindclade Internal Monorepo
+Copyright (c) 2026 Mindclade. All rights reserved.
+
+Third-party dependencies retain their respective licenses and notices. This file
+does not replace those obligations; release evidence must bind the dependency
+inventory and SPDX SBOM for each shipped artifact.

@@ -1,0 +1,51 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["component.yaml"])
+
+py_library(
+    name = "models_core",
+    # Bazel globs stop at the CladeFold subpackage's BUILD boundary, keeping
+    # family code out of core while retaining the shared namespace packages.
+    srcs = glob(["src/**/*.py"]),
+    data = glob(
+        [
+            "src/**/*.json",
+            "src/**/*.yaml",
+            "src/**/py.typed",
+        ],
+        allow_empty = True,
+    ),
+    imports = ["src"],
+    deps = [requirement("torch")],
+)
+
+py_library(
+    name = "models",
+    deps = [
+        ":models_core",
+        "//models/src/mindclade/models/families/clade/cladefold",
+    ],
+)
+
+exports_files(["conftest.py"])
+
+filegroup(
+    name = "dependency_policy_sources",
+    srcs = glob(["src/**/*.py"]) + [
+        "//models/src/mindclade/models/families/clade/cladefold:dependency_policy_sources",
+    ],
+)
+
+pytest_test(
+    name = "model_contract_test",
+    srcs = ["conftest.py"] + glob(["tests/*.py"]),
+    args = ["models/tests"],
+    deps = [
+        ":models",
+        requirement("torch"),
+    ],
+)

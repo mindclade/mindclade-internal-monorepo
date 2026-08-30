@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.19@sha256:b6afd42430b15f2d2a4c5a02b919e98a525b785b1aaff16747d2f623364e39b6
+FROM golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY LICENSE NOTICE /licenses/
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY services/runtime_gateway ./services/runtime_gateway
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
+    -ldflags='-s -w' -o /out/runtime-gateway ./services/runtime_gateway/cmd/runtime-gateway
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+LABEL org.opencontainers.image.title="Mindclade runtime gateway" \
+      org.opencontainers.image.licenses="LicenseRef-Mindclade-Proprietary"
+COPY --from=build --chown=65532:65532 /out/runtime-gateway /runtime-gateway
+COPY --from=build --chown=65532:65532 /licenses /licenses
+USER 65532:65532
+ENTRYPOINT ["/runtime-gateway"]

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artifact-store-development
+  annotations:
+    mindclade.dev/development-only: "replace with a replicated durable artifact backend"
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: premium-rwo
+  volumeMode: Filesystem
+  resources:
+    requests: {storage: 100Gi}

@@ -1,0 +1,19 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: mindclade-inference
+spec:
+  type: python-library
+  owner: "@mindclade/ml-platform"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Deterministic, integrity-preserving model inference runtime.
+  sourceRoot: src/mindclade/inference
+  dependencies: [mindclade-models]
+  release:
+    mode: python-wheel
+    artifact: mindclade-inference
+    version: 0.1.0
+    public: false
+    controls: []

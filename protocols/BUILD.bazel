@@ -1,0 +1,142 @@
+load("@cargo_crates//:defs.bzl", "all_crate_deps")
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_buf//buf:defs.bzl", "buf_breaking_test", "buf_lint_test")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "proto_sources",
+    srcs = glob(["proto/**/*.proto"]),
+)
+
+proto_library(
+    name = "mindclade_proto",
+    srcs = glob(["proto/**/*.proto"]),
+    strip_import_prefix = "proto",
+    deps = ["@protobuf//:timestamp_proto"],
+)
+
+buf_lint_test(
+    name = "proto_lint_test",
+    config = "//:buf.yaml",
+    module = "protocols/proto",
+    targets = [":mindclade_proto"],
+)
+
+buf_breaking_test(
+    name = "proto_breaking_test",
+    against = "compatibility/baselines/protobuf.binpb",
+    config = "//:buf.yaml",
+    module = "protocols/proto",
+    targets = [":mindclade_proto"],
+)
+
+filegroup(
+    name = "schemas",
+    srcs = glob(["schemas/**/*.json"]),
+)
+
+filegroup(
+    name = "generated_clients",
+    srcs = glob(["generated/**/*"]),
+)
+
+py_library(
+    name = "python_client",
+    srcs = glob(["generated/python/**/*.py"]),
+    imports = ["generated/python"],
+    deps = [
+        requirement("grpcio"),
+        requirement("protobuf"),
+    ],
+)
+
+pytest_test(
+    name = "python_client_test",
+    srcs = ["python/tests/test_client_smoke.py"],
+    args = ["protocols/python/tests/test_client_smoke.py"],
+    deps = [
+        ":python_client",
+        "//inference:pkg",
+        requirement("grpcio"),
+        requirement("protobuf"),
+    ],
+)
+
+rust_library(
+    name = "rust_client",
+    srcs = ["rust/src/lib.rs"] + glob(["generated/rust/**/*.rs"]),
+    crate_name = "mindclade_protocols",
+    crate_root = "rust/src/lib.rs",
+    edition = "2024",
+    deps = all_crate_deps(
+        package_name = "protocols/rust",
+        normal = True,
+    ),
+)
+
+rust_test(
+    name = "rust_client_test",
+    srcs = ["rust/tests/generated_messages.rs"],
+    crate_root = "rust/tests/generated_messages.rs",
+    edition = "2024",
+    deps = [":rust_client"] + all_crate_deps(
+        package_name = "protocols/rust",
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+pytest_test(
+    name = "schema_compatibility_test",
+    srcs = ["compatibility/tests/test_schema_compatibility.py"],
+    args = [
+        "protocols/compatibility/tests/test_schema_compatibility.py::test_model_manifest_fixtures_match_runtime_contract",
+        "protocols/compatibility/tests/test_schema_compatibility.py::test_release_manifest_is_development_only",
+        "protocols/compatibility/tests/test_schema_compatibility.py::test_json_schema_and_openapi_baselines_are_current",
+    ],
+    data = [":schemas"] + glob([
+        "compatibility/baselines/*.json",
+        "openapi/*.yaml",
+    ]),
+    deps = [
+        "//models",
+        requirement("jsonschema"),
+        requirement("pyyaml"),
+    ],
+)
+
+py_test(
+    name = "generated_client_drift_test",
+    srcs = [
+        "compatibility/tests/test_schema_compatibility.py",
+        "//tools/bazel:buf_pytest_main.py",
+    ],
+    args = [
+        "protocols/compatibility/tests/test_schema_compatibility.py::test_executable_semantics_match_openapi_and_protobuf",
+        "protocols/compatibility/tests/test_schema_compatibility.py::test_checked_in_generated_clients_have_no_drift",
+    ],
+    data = [
+        "compatibility/semantic_contract.json",
+        "openapi/external-api.yaml",
+        ":generated_clients",
+        ":mindclade_proto",
+        ":proto_sources",
+        "//:buf.gen.yaml",
+        "//:buf.yaml",
+        "@rules_buf_toolchains//:buf",
+    ],
+    main = "//tools/bazel:buf_pytest_main.py",
+    deps = [
+        "//models",
+        requirement("jsonschema"),
+        requirement("pytest"),
+        requirement("pyyaml"),
+    ],
+)

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "mindclade-inference-worker"
+version = "0.1.0"
+description = "Fenced, integrity-verifying Mindclade inference worker"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Mindclade-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Mindclade" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "cryptography>=46,<47",
+  "mindclade-inference==0.1.0",
+]
+
+[project.scripts]
+mindclade-inference-worker = "mindclade_inference_worker.cli:main"
+
+[tool.uv.build-backend]
+module-name = "mindclade_inference_worker"
+module-root = "python"
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

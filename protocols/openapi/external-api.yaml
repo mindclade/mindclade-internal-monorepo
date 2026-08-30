@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: Mindclade inference API
+  version: 0.1.0
+  description: Private asynchronous API for Q0 reference inference.
+servers:
+  - url: https://api.invalid/v1alpha1
+security:
+  - bearerAuth: []
+paths:
+  /tenants/{tenantId}/projects/{projectId}/inference-jobs:
+    post:
+      operationId: submitInference
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/ProjectId"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SubmitInference"}
+      responses:
+        "202":
+          description: Job accepted or idempotently replayed.
+          headers:
+            X-Idempotent-Replay:
+              description: True when the idempotency key replayed an identical request.
+              schema: {type: boolean}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Job"}
+        "409": {description: Idempotency key was reused with different content.}
+        "429": {description: Tenant budget or concurrency admission rejected the request.}
+  /tenants/{tenantId}/projects/{projectId}/inference-jobs/{jobId}:
+    get:
+      operationId: getInference
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Current immutable job projection.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Job"}
+        "404": {description: Job is absent from this tenant and project scope.}
+    delete:
+      operationId: cancelInference
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: Cancellation recorded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Job"}
+        "409": {description: Job is already terminal.}
+  /tenants/{tenantId}/projects/{projectId}/inference-jobs/{jobId}/events:
+    get:
+      operationId: streamInferenceEvents
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/JobId"
+        - name: Last-Event-ID
+          in: header
+          schema: {type: string}
+      responses:
+        "200":
+          description: Resumable server-sent event stream.
+          content:
+            text/event-stream:
+              schema: {type: string}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    TenantId: {name: tenantId, in: path, required: true, schema: {$ref: "#/components/schemas/Identifier"}}
+    ProjectId: {name: projectId, in: path, required: true, schema: {$ref: "#/components/schemas/Identifier"}}
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      description: Restart-unique immutable job identity assigned by the control plane.
+      schema: {type: string, pattern: "^job-[0-9a-f]{32}-[0-9]{8}$"}
+  schemas:
+    Identifier:
+      type: string
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    SubmitInference:
+      type: object
+      additionalProperties: false
+      required: [model_digest, input_artifact, diffusion_steps]
+      properties:
+        model_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        input_artifact: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        seed: {type: integer, minimum: 0, maximum: 9223372036854775807}
+        diffusion_steps: {type: integer, minimum: 2, maximum: 128}
+    Job:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - scope
+        - state
+        - model_digest
+        - input_artifact
+        - seed
+        - diffusion_steps
+        - estimated_gpu_milliseconds
+        - fencing_token
+        - created_at
+        - updated_at
+      properties:
+        id: {type: string, pattern: "^job-[0-9a-f]{32}-[0-9]{8}$"}
+        scope:
+          type: object
+          additionalProperties: false
+          required: [tenant_id, project_id]
+          properties:
+            tenant_id: {$ref: "#/components/schemas/Identifier"}
+            project_id: {$ref: "#/components/schemas/Identifier"}
+        state:
+          type: string
+          enum: [queued, admitted, running, succeeded, failed, cancelled]
+        model_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        input_artifact: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        seed: {type: integer, minimum: 0, maximum: 9223372036854775807}
+        diffusion_steps: {type: integer, minimum: 2, maximum: 128}
+        result_artifact: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+        result_artifact_uri:
+          type: string
+          pattern: "^artifact://sha256/[0-9a-f]{64}$"
+        failure_code: {$ref: "#/components/schemas/Identifier"}
+        estimated_gpu_milliseconds: {type: integer, minimum: 1}
+        fencing_token: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}

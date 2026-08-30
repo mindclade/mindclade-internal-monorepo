@@ -1,0 +1,26 @@
+name: buildkite-dispatch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dispatch trusted revision
+        env:
+          BUILDKITE_API_TOKEN: ${{ secrets.BUILDKITE_API_TOKEN }}
+          BUILDKITE_ORGANIZATION_SLUG: ${{ vars.BUILDKITE_ORGANIZATION_SLUG }}
+          BUILDKITE_PIPELINE_SLUG: ${{ vars.BUILDKITE_PIPELINE_SLUG }}
+        run: python3 tools/ci/dispatch_buildkite.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buildkite-dispatch-receipt
+          path: buildkite-dispatch-receipt.json

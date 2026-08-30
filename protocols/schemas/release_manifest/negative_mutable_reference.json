@@ -1,0 +1,7 @@
+{
+  "schema_version": "v1alpha1",
+  "stage": "production",
+  "bundle_digest": "latest",
+  "signature": {"algorithm": "none", "key_id": "", "value": ""},
+  "evidence_digests": []
+}

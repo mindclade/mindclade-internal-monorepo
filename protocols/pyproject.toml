@@ -1,0 +1,41 @@
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "mindclade-protocols"
+version = "0.1.0"
+description = "Generated protobuf and gRPC clients for private Mindclade APIs"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Mindclade-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Mindclade" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "grpcio>=1.78,<2",
+  "protobuf>=7.36,<8",
+]
+
+[project.urls]
+Repository = "https://github.com/mindclade/mindclade-internal-monorepo"
+
+[tool.uv.build-backend]
+module-name = "mindclade"
+module-root = "generated/python"
+namespace = true
+wheel-exclude = [
+  "artifact_reference_pb2_grpc.py",
+  "command_context_pb2_grpc.py",
+  "error_detail_pb2_grpc.py",
+  "identifiers_pb2_grpc.py",
+  "job_pb2_grpc.py",
+  "model_bundle_pb2_grpc.py",
+  "model_release_pb2_grpc.py",
+  "tenant_pb2_grpc.py",
+  "tensor_set_pb2_grpc.py",
+]

@@ -1,0 +1,19 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: mindclade-models
+spec:
+  type: python-library
+  owner: "@mindclade/model-platform"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Integrity-checked model definitions, tensor contracts, and model bundles.
+  sourceRoot: src/mindclade/models
+  dependencies: []
+  release:
+    mode: python-wheel
+    artifact: mindclade-models
+    version: 0.1.0
+    public: false
+    controls: []

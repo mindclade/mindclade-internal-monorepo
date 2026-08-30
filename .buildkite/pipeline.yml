@@ -1,0 +1,32 @@
+env:
+  PYTHONNOUSERSITE: "1"
+
+steps:
+  - label: ":python: policy and CPU"
+    key: cpu
+    command: python3 .buildkite/steps/cpu.py
+    agents:
+      queue: cpu
+
+  - label: ":gpu: CUDA qualification"
+    key: gpu
+    command: python3 .buildkite/steps/gpu.py
+    agents:
+      queue: gpu-l4
+    depends_on: cpu
+    artifact_paths: gpu-evidence.json
+
+  - label: ":kubernetes: service contracts"
+    key: service
+    command: python3 .buildkite/steps/service.py
+    depends_on: cpu
+
+  - label: ":package: release evidence"
+    key: release
+    command: python3 .buildkite/steps/release.py
+    depends_on: [cpu, gpu, service]
+    if: build.branch == "main"
+    artifact_paths:
+      - release-evidence.json
+      - dist/*.whl
+      - dist/images/*

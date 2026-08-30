@@ -1,0 +1,11 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["build_images.py"])
+
+py_binary(
+    name = "build_images",
+    srcs = ["build_images.py"],
+    main = "build_images.py",
+)

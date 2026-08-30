@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package mindclade.artifact.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/artifact/v1alpha1;artifactv1alpha1";
+
+message BundleFile {
+  string path = 1;
+  string digest = 2;
+  int64 size_bytes = 3;
+  string media_type = 4;
+}
+
+message ModelBundle {
+  string schema_version = 1;
+  string artifact_type = 2;
+  string model_type = 3;
+  string architecture_version = 4;
+  string source_revision = 5;
+  string config_digest = 6;
+  repeated BundleFile files = 7;
+  repeated string capability_claim_refs = 8;
+  repeated string claims = 9;
+}

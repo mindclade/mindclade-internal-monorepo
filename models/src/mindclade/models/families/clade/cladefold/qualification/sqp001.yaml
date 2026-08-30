@@ -1,0 +1,14 @@
+apiVersion: mindclade.dev/v1alpha1
+kind: ScientificQualificationProfile
+metadata:
+  name: sqp001-cladefold-q0
+spec:
+  subject: cladefold-q0-random-init
+  status: REFERENCE_ONLY
+  allowedClaims:
+    - systems-reference-only
+    - random-initialization
+  prohibitedClaims:
+    - biological-accuracy
+    - clinical-use
+    - production-quality

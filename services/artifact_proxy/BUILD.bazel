@@ -1,0 +1,39 @@
+load("@cargo_crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "container_definition",
+    srcs = ["Containerfile"],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "artifact_proxy",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "mindclade_artifact_proxy",
+    edition = "2024",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "artifact-proxy",
+    srcs = ["src/main.rs"],
+    edition = "2024",
+    deps = [":artifact_proxy"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "artifact_contract_test",
+    srcs = ["tests/artifact_contract.rs"],
+    edition = "2024",
+    deps = [":artifact_proxy"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

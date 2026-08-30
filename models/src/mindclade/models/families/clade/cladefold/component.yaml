@@ -1,0 +1,21 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: cladefold-q0
+spec:
+  type: model-family
+  owner: "@mindclade/model-platform"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Random-initialized systems reference model with no pretrained weights.
+  dependencies: [mindclade-models]
+  release:
+    mode: none
+    artifact: null
+    version: null
+    public: false
+    controls: []
+  model:
+    capability: systems-reference-only
+    weights: none

@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: model-runtime-deployment
+spec:
+  type: deployment
+  owner: "@mindclade/platform-runtime"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Policy-checked GKE, Kueue, and JobSet development manifests.
+  dependencies: [control-plane, runtime-gateway, artifact-proxy, inference-worker]
+  release:
+    mode: development-manifests
+    artifact: mindclade-model-runtime
+    version: null
+    public: false
+    controls: [development-stage-only]

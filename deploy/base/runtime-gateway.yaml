@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: runtime-gateway}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: runtime-gateway}
+    spec:
+      serviceAccountName: runtime-gateway
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: runtime-gateway
+          image: us-docker.pkg.dev/mindclade-development/runtime/runtime-gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          env:
+            - {name: MINDCLADE_RUNTIME_GATEWAY_ADDRESS, value: "0.0.0.0:8080"}
+            - {name: MINDCLADE_CONTROL_PLANE_URL, value: "http://control-plane:8081"}
+            - {name: MINDCLADE_OIDC_ISSUER, value: "https://identity.mindclade.invalid/"}
+            - {name: MINDCLADE_OIDC_AUDIENCE, value: "mindclade-api"}
+            - {name: MINDCLADE_OIDC_KEY_ID, value: "replace-by-identity-operator"}
+            - {name: MINDCLADE_OIDC_PUBLIC_KEY_FILE, value: "/var/run/mindclade-identity/public.pem"}
+            - {name: MINDCLADE_INTERNAL_IDENTITY_SECRET_FILE, value: "/var/run/mindclade-internal-auth/hmac"}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 10}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: oidc-public-key, mountPath: /var/run/mindclade-identity, readOnly: true}
+            - {name: internal-identity, mountPath: /var/run/mindclade-internal-auth, readOnly: true}
+      volumes:
+        - name: oidc-public-key
+          secret: {secretName: oidc-public-key, defaultMode: 0444}
+        - name: internal-identity
+          secret: {secretName: internal-identity-hmac, defaultMode: 0440}

@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: artifact-proxy
+spec:
+  type: service
+  owner: "@mindclade/platform-runtime"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Resumable digest-verifying artifact boundary with scoped capabilities.
+  dependencies: [protocols]
+  release:
+    mode: oci-image
+    artifact: artifact-proxy
+    version: null
+    public: false
+    controls: []

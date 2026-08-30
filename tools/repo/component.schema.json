@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mindclade.dev/components/v1alpha1/component.schema.json",
+  "title": "Mindclade governed component",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {
+      "const": "components.mindclade.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "Component"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/componentName"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "owner",
+        "maturity",
+        "visibility",
+        "dataClassification",
+        "description",
+        "dependencies",
+        "release"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "repository",
+            "python-library",
+            "model-family",
+            "protocol-contracts",
+            "service",
+            "worker",
+            "deployment"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^@mindclade/[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "maturity": {
+          "enum": ["experimental", "incubating", "stable", "deprecated"]
+        },
+        "visibility": {
+          "enum": ["private", "internal", "public"]
+        },
+        "dataClassification": {
+          "enum": ["public", "internal", "confidential", "restricted"]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "sourceRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source directory relative to the component manifest.",
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"
+        },
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/componentName"
+          }
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "python-library"
+              }
+            }
+          },
+          "then": {
+            "required": ["sourceRoot"],
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "python-wheel"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "sourceRoot": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "model-family"
+              }
+            }
+          },
+          "then": {
+            "required": ["model"],
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "model": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "repository"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "protocol-contracts"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "source-contracts"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": ["service", "worker"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "oci-image"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "deployment"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "release": {
+                "properties": {
+                  "mode": {
+                    "const": "development-manifests"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "componentName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 63
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "artifact", "version", "public", "controls"],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "python-wheel",
+            "oci-image",
+            "source-contracts",
+            "development-manifests"
+          ]
+        },
+        "artifact": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z0-9][a-z0-9._/-]*$"
+        },
+        "version": {
+          "type": ["string", "null"],
+          "pattern": "^(?:[0-9]+\\.[0-9]+\\.[0-9]+|v[0-9]+(?:alpha|beta)[0-9]+)$"
+        },
+        "public": {
+          "description": "Whether this artifact may be published outside private registries.",
+          "const": false
+        },
+        "controls": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "none"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "artifact": {
+                "const": null
+              },
+              "version": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "python-wheel",
+                  "oci-image",
+                  "source-contracts",
+                  "development-manifests"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "artifact": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": ["python-wheel", "source-contracts"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "weights"],
+      "properties": {
+        "capability": {
+          "enum": ["systems-reference-only", "qualified"]
+        },
+        "weights": {
+          "enum": ["none", "private-bundle"]
+        }
+      }
+    }
+  }
+}

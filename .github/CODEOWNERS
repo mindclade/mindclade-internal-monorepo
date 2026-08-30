@@ -1,0 +1,9 @@
+/models/ @mindclade/model-platform
+/training/ @mindclade/ml-platform
+/inference/ @mindclade/ml-platform
+/protocols/ @mindclade/platform-runtime @mindclade/ml-platform
+/services/ @mindclade/platform-runtime
+/workers/ @mindclade/platform-runtime @mindclade/ml-platform
+/deploy/ @mindclade/platform-runtime
+/.buildkite/ @mindclade/platform-runtime
+/.github/ @mindclade/platform-runtime

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package mindclade.common.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/common/v1alpha1;commonv1alpha1";
+
+message Scope {
+  string tenant_id = 1;
+  string project_id = 2;
+}
+
+message ResourceName {
+  Scope scope = 1;
+  string kind = 2;
+  string resource_id = 3;
+}

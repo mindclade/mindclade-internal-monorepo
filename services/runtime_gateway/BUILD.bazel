@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "container_definition",
+    srcs = ["Containerfile"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "runtime_gateway",
+    srcs = [
+        "auth.go",
+        "gateway.go",
+        "internal_auth.go",
+    ],
+    importpath = "github.com/mindclade/mindclade-internal-monorepo/services/runtime_gateway",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "runtime_gateway_test",
+    srcs = [
+        "auth_test.go",
+        "gateway_test.go",
+    ],
+    embed = [":runtime_gateway"],
+)
+
+go_binary(
+    name = "runtime-gateway",
+    srcs = ["cmd/runtime-gateway/main.go"],
+    deps = [":runtime_gateway"],
+)

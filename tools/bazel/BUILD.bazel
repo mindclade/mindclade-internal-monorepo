@@ -1,0 +1,15 @@
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "buf_pytest_main.py",
+    "pytest_main.py",
+    "uv_export.lock",
+])
+
+py_binary(
+    name = "export_uv_lock",
+    srcs = ["export_uv_lock.py"],
+    main = "export_uv_lock.py",
+)

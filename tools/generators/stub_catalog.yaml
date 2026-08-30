@@ -1,0 +1,39 @@
+apiVersion: generators.mindclade.dev/v1alpha1
+kind: StubCatalog
+profiles:
+  python-library:
+    required:
+      - pyproject.toml
+      - src/mindclade/{domain}/__init__.py
+      - src/mindclade/{domain}/py.typed
+      - src/mindclade/{domain}/{domain}.py
+      - tests/test_{domain}_contract.py
+      - BUILD.bazel
+      - component.yaml
+      - README.md
+    proof: [import, type, unit, dependency-law, wheel]
+  go-deployable:
+    required:
+      - {domain}.go
+      - {domain}_test.go
+      - cmd/{binary}/main.go
+      - BUILD.bazel
+      - component.yaml
+      - README.md
+    proof: [go-test, bazel-test, race, contract, composition-root]
+  rust-crate:
+    required:
+      - Cargo.toml
+      - src/lib.rs
+      - src/{domain}.rs
+      - tests/{domain}_contract.rs
+      - BUILD.bazel
+      - component.yaml
+      - README.md
+    proof: [cargo-test, bazel-test, clippy, conformance, license-audit]
+  protobuf-event-package:
+    required: [{domain}.proto, BUILD.bazel, compatibility-baseline, README.md]
+    proof: [buf-lint, generation-drift, breaking-change, round-trip]
+  deployment-package:
+    required: [release-package.yaml, values.schema.json, base, policy-fixtures, BUILD.bazel, component.yaml, README.md]
+    proof: [deterministic-render, schema, policy, rollback, digest-pin]

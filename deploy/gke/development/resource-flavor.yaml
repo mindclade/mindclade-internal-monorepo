@@ -1,0 +1,6 @@
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata: {name: l4}
+spec:
+  nodeLabels:
+    cloud.google.com/gke-accelerator: nvidia-l4

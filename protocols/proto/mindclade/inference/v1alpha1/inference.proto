@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package mindclade.inference.v1alpha1;
+
+import "mindclade/artifact/v1alpha1/artifact_reference.proto";
+import "mindclade/common/v1alpha1/command_context.proto";
+import "mindclade/common/v1alpha1/tensor_set.proto";
+import "mindclade/job/v1alpha1/job.proto";
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/inference/v1alpha1;inferencev1alpha1";
+
+message InferenceOptions {
+  // Inclusive valid range: 0..9223372036854775807.
+  uint64 seed = 1;
+  // Inclusive valid range: 2..128.
+  uint32 diffusion_steps = 2;
+  uint32 recycles = 3;
+  string precision = 4;
+}
+
+message SubmitInferenceRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string model_digest = 2;
+  oneof input {
+    // Retained for wire compatibility; the executable v1alpha1 API accepts
+    // only immutable input artifacts.
+    mindclade.common.v1alpha1.TensorSet inline_tensors = 3 [deprecated = true];
+    mindclade.artifact.v1alpha1.ArtifactReference input_artifact = 4;
+  }
+  InferenceOptions options = 5;
+}
+
+message SubmitInferenceResponse {
+  mindclade.job.v1alpha1.Job job = 1;
+  bool replayed = 2;
+}
+
+message GetInferenceRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string job_id = 2;
+}
+
+message GetInferenceResponse {
+  mindclade.job.v1alpha1.Job job = 1;
+}
+
+message CancelInferenceRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string job_id = 2;
+}
+
+message CancelInferenceResponse {
+  mindclade.job.v1alpha1.Job job = 1;
+}
+
+message StreamInferenceRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string job_id = 2;
+  string after_event_id = 3;
+}
+
+message StreamInferenceResponse {
+  string event_id = 1;
+  mindclade.job.v1alpha1.Job job = 2;
+  string detail = 3;
+}
+
+service InferenceService {
+  rpc SubmitInference(SubmitInferenceRequest) returns (SubmitInferenceResponse);
+  rpc GetInference(GetInferenceRequest) returns (GetInferenceResponse);
+  rpc CancelInference(CancelInferenceRequest) returns (CancelInferenceResponse);
+  rpc StreamInference(StreamInferenceRequest) returns (stream StreamInferenceResponse);
+}

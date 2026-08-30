@@ -1,0 +1,39 @@
+schema_version: v1alpha1
+model:
+  family: cladefold_q0
+  preset: tiny
+dataset:
+  name: synthetic_cladefold_v1
+  split: train
+  batch_size: 1
+  token_count: 8
+  atom_count: 16
+  shuffle: false
+program:
+  name: cladefold-q0-overfit-128
+  max_steps: 200
+  gradient_accumulation_steps: 1
+  optimizer:
+    name: adamw
+    learning_rate: 0.001
+    beta1: 0.9
+    beta2: 0.95
+    epsilon: 0.00000001
+    weight_decay: 0.0
+    max_gradient_norm: 1.0
+  scheduler:
+    name: constant
+    warmup_ratio: 0.0
+    minimum_learning_rate_ratio: 1.0
+  parallelism:
+    mode: single_process
+    world_size: 1
+    reshard_after_forward: true
+  precision:
+    mode: fp32
+    reduction_dtype: fp32
+  reproducibility:
+    seed: 17
+    deterministic_algorithms: true
+    warn_only: false
+  checkpoint_every_steps: 50

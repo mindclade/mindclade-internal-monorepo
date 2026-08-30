@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package mindclade.artifact.v1alpha1;
+
+import "mindclade/artifact/v1alpha1/artifact_reference.proto";
+import "mindclade/common/v1alpha1/command_context.proto";
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/artifact/v1alpha1;artifactv1alpha1";
+
+message BeginUploadRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string digest = 2;
+  int64 size_bytes = 3;
+  string media_type = 4;
+  // Caller-generated identifier bound into the one-use upload capability.
+  string session_id = 5;
+}
+
+message BeginUploadResponse {
+  string upload_id = 1;
+  int64 committed_bytes = 2;
+}
+
+message UploadChunkRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string upload_id = 2;
+  int64 offset = 3;
+  bytes data = 4;
+}
+
+message UploadChunkResponse {
+  int64 committed_bytes = 1;
+}
+
+message CommitUploadRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string upload_id = 2;
+}
+
+message CommitUploadResponse {
+  ArtifactReference artifact = 1;
+}
+
+message DownloadArtifactRequest {
+  mindclade.common.v1alpha1.CommandContext context = 1;
+  string digest = 2;
+}
+
+message DownloadArtifactResponse {
+  bytes data = 1;
+}
+
+service ArtifactService {
+  rpc BeginUpload(BeginUploadRequest) returns (BeginUploadResponse);
+  rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse);
+  rpc CommitUpload(CommitUploadRequest) returns (CommitUploadResponse);
+  rpc DownloadArtifact(DownloadArtifactRequest) returns (stream DownloadArtifactResponse);
+}

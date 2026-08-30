@@ -1,0 +1,43 @@
+apiVersion: architecture.mindclade.dev/v1alpha1
+kind: RepositoryPathManifest
+metadata:
+  blueprint: BLUEPRINT.md
+  wave: 0
+spec:
+  paths:
+    - path: models
+      status: active
+      owner: "@mindclade/model-platform"
+      profile: python-library
+    - path: training
+      status: active
+      owner: "@mindclade/ml-platform"
+      profile: python-library
+    - path: inference
+      status: active
+      owner: "@mindclade/ml-platform"
+      profile: python-library
+    - path: protocols
+      status: active
+      owner: "@mindclade/platform-runtime"
+      profile: protobuf-event-package
+    - path: services/control_plane
+      status: active
+      owner: "@mindclade/platform-runtime"
+      profile: go-deployable
+    - path: services/runtime_gateway
+      status: active
+      owner: "@mindclade/platform-runtime"
+      profile: go-deployable
+    - path: services/artifact_proxy
+      status: active
+      owner: "@mindclade/platform-runtime"
+      profile: rust-crate
+    - path: workers/inference_worker
+      status: active
+      owner: "@mindclade/ml-platform"
+      profile: service-worker-image
+    - path: deploy
+      status: active
+      owner: "@mindclade/platform-runtime"
+      profile: deployment-package

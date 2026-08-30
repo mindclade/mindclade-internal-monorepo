@@ -1,0 +1,11 @@
+{
+  "schema_version": "v1alpha1",
+  "stage": "development",
+  "bundle_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "signature": {
+    "algorithm": "Ed25519",
+    "key_id": "development-key-2026",
+    "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "evidence_digests": []
+}

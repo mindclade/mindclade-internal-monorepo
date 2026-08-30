@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "container_definition",
+    srcs = ["Containerfile"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "control_plane",
+    srcs = [
+        "catalog.go",
+        "completion.go",
+        "dispatcher.go",
+        "http.go",
+        "internal_auth.go",
+        "jobs.go",
+        "jobset_reconciler.go",
+        "kubernetes_launcher.go",
+        "result_publication.go",
+        "signing.go",
+    ],
+    importpath = "github.com/mindclade/mindclade-internal-monorepo/services/control_plane",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "control_plane_test",
+    srcs = [
+        "http_test.go",
+        "jobs_test.go",
+        "jobset_reconciler_test.go",
+        "kubernetes_launcher_test.go",
+        "lifecycle_test.go",
+    ],
+    embed = [":control_plane"],
+    deps = ["//services/runtime_gateway"],
+)
+
+go_binary(
+    name = "control-plane",
+    srcs = ["cmd/control-plane/main.go"],
+    deps = [":control_plane"],
+)

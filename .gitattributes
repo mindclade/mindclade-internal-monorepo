@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.safetensors binary
+*.pt binary
+*.pth binary
+*.onnx binary
+*.png binary
+*.jpg binary
+protocols/generated/** whitespace=-blank-at-eof

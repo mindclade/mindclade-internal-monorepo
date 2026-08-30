@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package mindclade.artifact.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/artifact/v1alpha1;artifactv1alpha1";
+
+message ArtifactReference {
+  string digest = 1;
+  int64 size_bytes = 2;
+  string media_type = 3;
+}
+
+message SignedArtifactReference {
+  ArtifactReference artifact = 1;
+  string manifest_digest = 2;
+  bytes ed25519_signature = 3;
+  string signing_key_id = 4;
+}

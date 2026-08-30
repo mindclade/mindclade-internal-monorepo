@@ -1,0 +1,42 @@
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "mindclade-models"
+version = "0.1.0"
+description = "Internal, integrity-checked model definitions for Mindclade."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Mindclade-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Mindclade" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = ["torch>=2.13,<2.14"]
+
+[project.urls]
+Repository = "https://github.com/mindclade/mindclade-internal-monorepo"
+
+[tool.uv.build-backend]
+module-name = "mindclade.models"
+module-root = "src"
+wheel-exclude = [
+  "**/BUILD.bazel",
+  "**/README.md",
+  "**/component.yaml",
+  "**/tests/**",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+consider_namespace_packages = true
+testpaths = ["tests", "src/mindclade/models/families/clade/cladefold/tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100

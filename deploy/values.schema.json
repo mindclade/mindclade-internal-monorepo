@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mindclade.dev/deploy/model-runtime-values/v1alpha1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stage", "images", "workloadIdentity"],
+  "properties": {
+    "stage": {"const": "development"},
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlPlane", "runtimeGateway", "artifactProxy", "inferenceWorker"],
+      "properties": {
+        "controlPlane": {"$ref": "#/$defs/image"},
+        "runtimeGateway": {"$ref": "#/$defs/image"},
+        "artifactProxy": {"$ref": "#/$defs/image"},
+        "inferenceWorker": {"$ref": "#/$defs/image"}
+      }
+    },
+    "workloadIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlPlaneGcpServiceAccount"],
+      "properties": {
+        "controlPlaneGcpServiceAccount": {"type": "string", "pattern": "^[a-z][a-z0-9-]+@[a-z][a-z0-9-]+\\.iam\\.gserviceaccount\\.com$"}
+      }
+    }
+  },
+  "$defs": {
+    "image": {"type": "string", "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"}
+  }
+}

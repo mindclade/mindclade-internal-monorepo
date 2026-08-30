@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package mindclade.common.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "mindclade/common/v1alpha1/identifiers.proto";
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/common/v1alpha1;commonv1alpha1";
+
+message CommandContext {
+  Scope scope = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string principal_subject = 4;
+  google.protobuf.Timestamp deadline = 5;
+}

@@ -1,0 +1,40 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "dependency_policy_sources",
+    srcs = glob(["**/*.py"]),
+)
+
+py_library(
+    name = "cladefold",
+    srcs = glob(
+        ["**/*.py"],
+        exclude = ["tests/**"],
+    ),
+    data = [
+        "configuration/configuration.schema.json",
+        "qualification/sqp001.yaml",
+    ],
+    deps = [
+        "//models:models_core",
+        requirement("torch"),
+    ],
+)
+
+pytest_test(
+    name = "cladefold_contract_test",
+    srcs = glob(["tests/*.py"]),
+    args = ["models/src/mindclade/models/families/clade/cladefold/tests"],
+    data = ["//models:conftest.py"],
+    deps = [
+        ":cladefold",
+        "//models",
+        requirement("torch"),
+    ],
+)

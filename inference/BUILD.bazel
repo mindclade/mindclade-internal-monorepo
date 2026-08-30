@@ -1,0 +1,33 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "dependency_policy_sources",
+    srcs = glob(["src/**/*.py"]),
+)
+
+py_library(
+    name = "pkg",
+    srcs = glob(["src/**/*.py"]),
+    data = glob(["src/**/py.typed"]),
+    imports = ["src"],
+    deps = [
+        "//models",
+        requirement("torch"),
+    ],
+)
+
+pytest_test(
+    name = "inference_contract_test",
+    srcs = glob(["tests/*.py"]),
+    args = ["inference/tests"],
+    deps = [
+        ":pkg",
+        requirement("torch"),
+    ],
+)

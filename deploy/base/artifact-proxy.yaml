@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-proxy
+spec:
+  # The development backend uses pod-local resumable session state.
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: artifact-proxy}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: artifact-proxy}
+    spec:
+      serviceAccountName: artifact-proxy
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: artifact-proxy
+          image: us-docker.pkg.dev/mindclade-development/runtime/artifact-proxy@sha256:3333333333333333333333333333333333333333333333333333333333333333
+          env:
+            - {name: MINDCLADE_ARTIFACT_PROXY_ADDRESS, value: "0.0.0.0:8082"}
+            - {name: MINDCLADE_ARTIFACT_ROOT, value: "/var/lib/mindclade-artifacts"}
+            - {name: MINDCLADE_ARTIFACT_PUBLIC_KEYS_FILE, value: "/var/run/mindclade-signing/public-keys.json"}
+          ports: [{name: http, containerPort: 8082}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 5}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: scratch, mountPath: /var/lib/mindclade-artifacts}
+            - {name: signing-keys, mountPath: /var/run/mindclade-signing, readOnly: true}
+      volumes:
+        - name: scratch
+          persistentVolumeClaim: {claimName: artifact-store-development, readOnly: false}
+        - name: signing-keys
+          secret: {secretName: artifact-signing-public-keys, defaultMode: 0444}

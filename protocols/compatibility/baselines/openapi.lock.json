@@ -1,0 +1,6 @@
+{
+  "api": "v1alpha1",
+  "canonical_sha256": "0b0903b3032f71b449c2e0273aae871fac3ec00a431740c8cfd777b75bcc3192",
+  "document": "protocols/openapi/external-api.yaml",
+  "version": "0.1.0"
+}

@@ -1,0 +1,16 @@
+[workspace]
+members = ["protocols/rust", "services/artifact_proxy"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+license = "LicenseRef-Mindclade-Proprietary"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

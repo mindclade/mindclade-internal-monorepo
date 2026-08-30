@@ -1,0 +1,11 @@
+{
+  "schema_version": "v1alpha1",
+  "artifact_type": "application/vnd.mindclade.model.bundle.v1",
+  "model_type": "cladefold-q0",
+  "architecture_version": "q0",
+  "source_revision": "working-tree",
+  "config_digest": "latest",
+  "files": [],
+  "capability_claim_refs": [],
+  "claims": ["unqualified-accuracy"]
+}

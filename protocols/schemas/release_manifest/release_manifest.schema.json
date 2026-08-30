@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mindclade.dev/release_manifest/v1alpha1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "stage", "bundle_digest", "signature", "evidence_digests"],
+  "properties": {
+    "schema_version": {"const": "v1alpha1"},
+    "stage": {"enum": ["development"]},
+    "bundle_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "value"],
+      "properties": {
+        "algorithm": {"const": "Ed25519"},
+        "key_id": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 40}
+      }
+    },
+    "evidence_digests": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+      "uniqueItems": true
+    }
+  }
+}

@@ -1,0 +1,19 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: mindclade-training
+spec:
+  type: python-library
+  owner: "@mindclade/ml-platform"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Reproducible optimization, checkpointing, and trainability qualification.
+  sourceRoot: src/mindclade/training
+  dependencies: [mindclade-models]
+  release:
+    mode: python-wheel
+    artifact: mindclade-training
+    version: 0.1.0
+    public: false
+    controls: []

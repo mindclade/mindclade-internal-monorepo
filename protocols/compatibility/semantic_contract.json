@@ -1,0 +1,93 @@
+{
+  "artifact": {
+    "begin_upload": {
+      "proto_message": "mindclade.artifact.v1alpha1.BeginUploadRequest",
+      "required_fields": {
+        "context": "TYPE_MESSAGE",
+        "digest": "TYPE_STRING",
+        "media_type": "TYPE_STRING",
+        "session_id": "TYPE_STRING",
+        "size_bytes": "TYPE_INT64"
+      },
+      "runtime_source": "services/artifact_proxy/src/http.rs"
+    },
+    "download": {
+      "data_field": "data",
+      "data_type": "TYPE_BYTES",
+      "proto_service": "mindclade.artifact.v1alpha1.ArtifactService",
+      "request_type": ".mindclade.artifact.v1alpha1.DownloadArtifactRequest",
+      "response_type": ".mindclade.artifact.v1alpha1.DownloadArtifactResponse",
+      "rpc": "DownloadArtifact",
+      "runtime_route": "GET /v1alpha1/artifacts/{digest}",
+      "server_streaming": true
+    }
+  },
+  "job": {
+    "example_terminal_projection": {
+      "created_at": "2026-08-29T00:00:00Z",
+      "diffusion_steps": 128,
+      "estimated_gpu_milliseconds": 12800,
+      "fencing_token": 1,
+      "id": "job-11111111111111111111111111111111-00000001",
+      "input_artifact": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "model_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result_artifact": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "result_artifact_uri": "artifact://sha256/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "scope": {"project_id": "project-a", "tenant_id": "tenant-a"},
+      "seed": 9223372036854775807,
+      "state": "succeeded",
+      "updated_at": "2026-08-29T00:00:01Z"
+    },
+    "field_mappings": {
+      "diffusion_steps": {"proto_field": "diffusion_steps", "proto_type": "TYPE_UINT32"},
+      "failure_code": {"proto_field": "failure_code", "proto_type": "TYPE_STRING"},
+      "result_artifact": {"proto_field": "result", "proto_type": "TYPE_MESSAGE"},
+      "result_artifact_uri": {
+        "proto_field": "result_artifact_uri",
+        "proto_type": "TYPE_STRING"
+      },
+      "seed": {"proto_field": "seed", "proto_type": "TYPE_UINT64"},
+      "state": {"proto_field": "state", "proto_type": "TYPE_ENUM"}
+    },
+    "openapi_schema": "Job",
+    "proto_message": "mindclade.job.v1alpha1.Job",
+    "job_id_pattern": "^job-[0-9a-f]{32}-[0-9]{8}$",
+    "result_artifact_uri_pattern": "^artifact://sha256/[0-9a-f]{64}$",
+    "result_uri_runtime_source": "services/control_plane/result_publication.go",
+    "required_openapi_fields": [
+      "created_at",
+      "diffusion_steps",
+      "estimated_gpu_milliseconds",
+      "fencing_token",
+      "id",
+      "input_artifact",
+      "model_digest",
+      "scope",
+      "seed",
+      "state",
+      "updated_at"
+    ],
+    "runtime_source": "services/control_plane/jobs.go",
+    "states": ["queued", "admitted", "running", "succeeded", "failed", "cancelled"]
+  },
+  "submit_inference": {
+    "numeric_fields": {
+      "diffusion_steps": {
+        "maximum": 128,
+        "minimum": 2,
+        "proto_field": "diffusion_steps",
+        "proto_type": "TYPE_UINT32"
+      },
+      "seed": {
+        "maximum": 9223372036854775807,
+        "minimum": 0,
+        "proto_field": "seed",
+        "proto_type": "TYPE_UINT64"
+      }
+    },
+    "openapi_schema": "SubmitInference",
+    "proto_message": "mindclade.inference.v1alpha1.InferenceOptions",
+    "runtime_source": "services/control_plane/jobs.go"
+  },
+  "version": "v1alpha1"
+}

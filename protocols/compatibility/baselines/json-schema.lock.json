@@ -1,0 +1,7 @@
+{
+  "api": "v1alpha1",
+  "canonical_sha256": {
+    "model_manifest": "2cdd794763ea3b0f6f38116e8760e973354f31a11f3f4aa39f9ff35ce31480bf",
+    "release_manifest": "9de1234d17e6c694a7e84742f483be4af042b1300510902bd4442a5d3d33f6ec"
+  }
+}

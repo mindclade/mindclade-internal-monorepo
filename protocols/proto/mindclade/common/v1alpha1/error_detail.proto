@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package mindclade.common.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/common/v1alpha1;commonv1alpha1";
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  map<string, string> metadata = 4;
+}

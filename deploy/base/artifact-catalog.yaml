@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: artifact-catalog-development
+  annotations:
+    mindclade.dev/development-only: "replace with a durable tenant-scoped catalog"
+data:
+  catalog.json: |
+    [
+      {
+        "tenant_id": "replace-by-scheduler",
+        "project_id": "replace-by-scheduler",
+        "kind": "model",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bundle_archive_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bundle_archive_size_bytes": 1048576,
+        "bundle_signing_key_id": "bundle-development-001"
+      },
+      {
+        "tenant_id": "replace-by-scheduler",
+        "project_id": "replace-by-scheduler",
+        "kind": "input",
+        "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size_bytes": 1048576
+      }
+    ]

@@ -1,0 +1,110 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+package(default_visibility = ["//visibility:private"])
+
+exports_files([
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "BLUEPRINT.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "component.yaml",
+    "buf.gen.yaml",
+    "buf.yaml",
+    "pyproject.toml",
+    "tools/repo/component.schema.json",
+    "tools/repo/component_metadata.py",
+    "tools/repo/dependency_policy.py",
+])
+
+pytest_test(
+    name = "dependency_policy_test",
+    srcs = ["tests/test_dependency_policy.py"],
+    args = ["tests/test_dependency_policy.py"],
+    data = [
+        "tools/repo/dependency_policy.py",
+        "//inference:dependency_policy_sources",
+        "//models:dependency_policy_sources",
+        "//training:dependency_policy_sources",
+    ],
+)
+
+pytest_test(
+    name = "component_metadata_test",
+    srcs = ["tests/test_component_metadata.py"],
+    args = ["tests/test_component_metadata.py"],
+    data = [
+        "component.yaml",
+        "tools/repo/component.schema.json",
+        "tools/repo/component_metadata.py",
+        "//deploy:component.yaml",
+        "//inference:component.yaml",
+        "//models:component.yaml",
+        "//models/src/mindclade/models/families/clade/cladefold:component.yaml",
+        "//protocols:component.yaml",
+        "//services/artifact_proxy:component.yaml",
+        "//services/control_plane:component.yaml",
+        "//services/runtime_gateway:component.yaml",
+        "//training:component.yaml",
+        "//workers/inference_worker:component.yaml",
+    ],
+    deps = [
+        requirement("jsonschema"),
+        requirement("pyyaml"),
+    ],
+)
+
+pytest_test(
+    name = "image_release_contract_test",
+    srcs = ["tests/test_image_release_contract.py"],
+    args = ["tests/test_image_release_contract.py"],
+    data = [
+        "Cargo.toml",
+        "//tools/release:build_images.py",
+        "//services/artifact_proxy:container_definition",
+        "//services/artifact_proxy:component.yaml",
+        "//services/control_plane:container_definition",
+        "//services/control_plane:component.yaml",
+        "//services/runtime_gateway:container_definition",
+        "//services/runtime_gateway:component.yaml",
+        "//workers/inference_worker:container_definition",
+        "//workers/inference_worker:component.yaml",
+    ],
+    deps = [requirement("pyyaml")],
+)
+
+pytest_test(
+    name = "release_ci_contract_test",
+    srcs = [
+        "tests/test_release_evidence.py",
+        "tests/test_trusted_context.py",
+    ],
+    args = [
+        "tests/test_release_evidence.py",
+        "tests/test_trusted_context.py",
+    ],
+    data = [
+        ".buildkite/lib/trusted_context.py",
+        ".buildkite/pipeline.yml",
+        ".buildkite/steps/release.py",
+        ".buildkite/steps/service.py",
+        "justfile",
+        "tools/ci/dispatch_buildkite.py",
+    ],
+)
+
+filegroup(
+    name = "governance",
+    srcs = [
+        "AGENTS.md",
+        "BLUEPRINT.md",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        "component.yaml",
+    ],
+)

@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.19@sha256:b6afd42430b15f2d2a4c5a02b919e98a525b785b1aaff16747d2f623364e39b6
+FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY LICENSE NOTICE /licenses/
+COPY protocols/rust ./protocols/rust
+COPY protocols/generated/rust ./protocols/generated/rust
+COPY services/artifact_proxy ./services/artifact_proxy
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --locked --release --package mindclade-artifact-proxy && \
+    cp target/release/mindclade-artifact-proxy /out-artifact-proxy
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+LABEL org.opencontainers.image.title="Mindclade artifact proxy" \
+      org.opencontainers.image.licenses="LicenseRef-Mindclade-Proprietary"
+COPY --from=build --chown=65532:65532 /out-artifact-proxy /artifact-proxy
+COPY --from=build --chown=65532:65532 /licenses /licenses
+USER 65532:65532
+ENTRYPOINT ["/artifact-proxy"]

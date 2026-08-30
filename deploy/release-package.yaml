@@ -1,0 +1,13 @@
+apiVersion: release.mindclade.dev/v1alpha1
+kind: ReleasePackage
+metadata:
+  name: mindclade-model-runtime
+spec:
+  owner: "@mindclade/platform-runtime"
+  allowedStages: [development]
+  immutableImagesRequired: true
+  innerModelSignature: Ed25519
+  outerImageReleaseVerification: Cosign
+  rollback: previous-signed-digest
+  retentionEnforcement: not-implemented-in-development
+  renderRoot: deploy/gke/development

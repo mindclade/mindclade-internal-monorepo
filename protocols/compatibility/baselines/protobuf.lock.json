@@ -1,0 +1,1 @@
+{"api":"v1alpha1","policy":"FILE","packages":["mindclade.admin.v1alpha1","mindclade.artifact.v1alpha1","mindclade.common.v1alpha1","mindclade.inference.v1alpha1","mindclade.job.v1alpha1","mindclade.model.v1alpha1"]}

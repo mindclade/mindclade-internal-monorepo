@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: mindclade-internal-monorepo
+spec:
+  type: repository
+  owner: "@mindclade/platform-runtime"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Governed product monorepo and build composition root.
+  dependencies: []
+  release:
+    mode: none
+    artifact: null
+    version: null
+    public: false
+    controls: []

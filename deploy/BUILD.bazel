@@ -1,0 +1,25 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+exports_files(["component.yaml"])
+
+pytest_test(
+    name = "deterministic_render_test",
+    srcs = [
+        "__init__.py",
+        "policies/__init__.py",
+        "policies/verify.py",
+        "tests/__init__.py",
+        "tests/test_deterministic_render.py",
+    ],
+    args = ["deploy/tests/test_deterministic_render.py"],
+    data = glob([
+        "**/*.yaml",
+        "**/*.json",
+        "**/*.sha256",
+    ]),
+    deps = [
+        requirement("jsonschema"),
+        requirement("pyyaml"),
+    ],
+)

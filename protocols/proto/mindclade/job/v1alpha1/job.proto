@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package mindclade.job.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "mindclade/artifact/v1alpha1/artifact_reference.proto";
+import "mindclade/common/v1alpha1/identifiers.proto";
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/job/v1alpha1;jobv1alpha1";
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_ADMITTED = 2;
+  JOB_STATE_RUNNING = 3;
+  JOB_STATE_SUCCEEDED = 4;
+  JOB_STATE_FAILED = 5;
+  JOB_STATE_CANCELLED = 6;
+}
+
+message Job {
+  mindclade.common.v1alpha1.ResourceName name = 1;
+  // Maps to the flat `state` field in the executable JSON Job projection.
+  JobState state = 2;
+  string model_digest = 3;
+  mindclade.artifact.v1alpha1.ArtifactReference input = 4;
+  mindclade.artifact.v1alpha1.ArtifactReference result = 5;
+  int64 estimated_gpu_milliseconds = 6;
+  int64 fencing_token = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  // Inclusive valid range: 0..9223372036854775807.
+  uint64 seed = 10;
+  // Inclusive valid range: 2..128.
+  uint32 diffusion_steps = 11;
+  // Set only when state is JOB_STATE_FAILED.
+  string failure_code = 12;
+  // Set only when state is JOB_STATE_SUCCEEDED and the result has a durable location.
+  string result_artifact_uri = 13;
+}

@@ -1,0 +1,50 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "dependency_policy_sources",
+    srcs = glob(["src/**/*.py"]),
+)
+
+filegroup(
+    name = "gpu_qualification_sources",
+    srcs = ["tests/test_gpu_qualification.py"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+)
+
+py_library(
+    name = "pkg",
+    srcs = glob(["src/**/*.py"]),
+    data = glob([
+        "src/**/*.yaml",
+        "src/**/py.typed",
+    ]),
+    imports = ["src"],
+    deps = [
+        "//models",
+        requirement("pyyaml"),
+        requirement("torch"),
+    ],
+)
+
+py_test(
+    name = "training_contract_test",
+    srcs = glob(
+        ["tests/test_*.py"],
+        exclude = ["tests/test_gpu_qualification.py"],
+    ),
+    imports = ["src"],
+    main = "tests/test_suite.py",
+    deps = [
+        ":pkg",
+        requirement("pytest"),
+        requirement("torch"),
+    ],
+)

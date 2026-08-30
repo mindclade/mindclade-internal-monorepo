@@ -1,0 +1,24 @@
+{
+  "schema_version": "v1alpha1",
+  "artifact_type": "application/vnd.mindclade.model.bundle.v1",
+  "model_type": "cladefold-q0",
+  "architecture_version": "q0",
+  "source_revision": "0123456789abcdef",
+  "config_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "files": [
+    {
+      "path": "config.json",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 1024,
+      "media_type": "application/json"
+    },
+    {
+      "path": "weights\\model.safetensors",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size_bytes": 4096,
+      "media_type": "application/vnd.safetensors"
+    }
+  ],
+  "capability_claim_refs": [],
+  "claims": []
+}

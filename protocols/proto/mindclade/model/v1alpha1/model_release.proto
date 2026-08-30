@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package mindclade.model.v1alpha1;
+
+import "mindclade/artifact/v1alpha1/artifact_reference.proto";
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/model/v1alpha1;modelv1alpha1";
+
+enum ReleaseStage {
+  RELEASE_STAGE_UNSPECIFIED = 0;
+  RELEASE_STAGE_DEVELOPMENT = 1;
+  RELEASE_STAGE_STAGING = 2;
+  RELEASE_STAGE_PRODUCTION = 3;
+  RELEASE_STAGE_REVOKED = 4;
+}
+
+message ModelRelease {
+  string release_id = 1;
+  string model_type = 2;
+  ReleaseStage stage = 3;
+  mindclade.artifact.v1alpha1.SignedArtifactReference bundle = 4;
+  repeated string evidence_digests = 5;
+  string source_revision = 6;
+}

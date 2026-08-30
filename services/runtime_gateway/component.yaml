@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: runtime-gateway
+spec:
+  type: service
+  owner: "@mindclade/platform-runtime"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: OIDC-authenticated tenant boundary for REST and SSE inference traffic.
+  dependencies: [protocols, control-plane]
+  release:
+    mode: oci-image
+    artifact: runtime-gateway
+    version: null
+    public: false
+    controls: []

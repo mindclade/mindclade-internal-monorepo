@@ -1,0 +1,40 @@
+load("@mindclade_pypi//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("//tools/bazel:pytest_test.bzl", "pytest_test")
+
+exports_files(["component.yaml"])
+
+filegroup(
+    name = "container_definition",
+    srcs = ["Containerfile"],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "inference_worker",
+    srcs = glob(["python/**/*.py"]),
+    imports = ["python"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//inference:pkg",
+        "//models",
+        requirement("cryptography"),
+        requirement("torch"),
+    ],
+)
+
+py_binary(
+    name = "worker",
+    srcs = ["python/mindclade_inference_worker/cli.py"],
+    imports = ["python"],
+    main = "python/mindclade_inference_worker/cli.py",
+    deps = [":inference_worker"],
+)
+
+pytest_test(
+    name = "worker_contract_test",
+    srcs = glob(["tests/*.py"]),
+    args = ["workers/inference_worker/tests"],
+    imports = ["python"],
+    deps = [":inference_worker"],
+)

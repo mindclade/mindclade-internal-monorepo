@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: inference-worker
+spec:
+  type: worker
+  owner: "@mindclade/ml-platform"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Fenced, one-job model executor with signed-bundle and tensor integrity checks.
+  dependencies: [mindclade-models, mindclade-inference, artifact-proxy, protocols]
+  release:
+    mode: oci-image
+    artifact: inference-worker
+    version: null
+    public: false
+    controls: []

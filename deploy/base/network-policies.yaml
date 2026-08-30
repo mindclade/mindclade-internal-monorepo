@@ -1,0 +1,148 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: edge-to-runtime-gateway}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: runtime-gateway}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {mindclade.dev/runtime-ingress: "true"}
+      ports: [{port: 8080, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: gateway-to-control-plane}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: runtime-gateway}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inference-worker}
+      ports: [{port: 8081, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: gateway-egress-to-control-plane}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: runtime-gateway}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+      ports: [{port: 8081, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: control-plane-egress-kubernetes-api}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  policyTypes: [Egress]
+  egress:
+    # Kubernetes API endpoints are outside the workload namespace and vary by
+    # cluster. Restrict the otherwise dynamic destination to TLS port 443.
+    - ports: [{port: 443, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: worker-to-artifact-proxy}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: artifact-proxy}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inference-worker}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+      ports: [{port: 8082, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: control-plane-egress-to-artifact-proxy}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: artifact-proxy}
+      ports: [{port: 8082, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: worker-egress-to-artifact-proxy}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: inference-worker}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: artifact-proxy}
+      ports: [{port: 8082, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: worker-egress-to-control-plane}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: inference-worker}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+      ports: [{port: 8081, protocol: TCP}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: monitoring-ingress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [control-plane, runtime-gateway]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {mindclade.dev/monitoring: "true"}
+      ports:
+        - {port: 8080, protocol: TCP}
+        - {port: 8081, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: dns-egress}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}

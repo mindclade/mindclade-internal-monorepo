@@ -1,0 +1,12 @@
+{
+  "stage": "development",
+  "images": {
+    "controlPlane": "us-docker.pkg.dev/mindclade-development/runtime/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "runtimeGateway": "us-docker.pkg.dev/mindclade-development/runtime/runtime-gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "artifactProxy": "us-docker.pkg.dev/mindclade-development/runtime/artifact-proxy@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "inferenceWorker": "us-docker.pkg.dev/mindclade-development/runtime/inference-worker@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "workloadIdentity": {
+    "controlPlaneGcpServiceAccount": "control-plane@mindclade-development.iam.gserviceaccount.com"
+  }
+}

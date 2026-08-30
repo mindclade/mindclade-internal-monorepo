@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package mindclade.common.v1alpha1;
+
+option go_package = "github.com/mindclade/mindclade-internal-monorepo/protocols/generated/go/mindclade/common/v1alpha1;commonv1alpha1";
+
+enum TensorDType {
+  TENSOR_D_TYPE_UNSPECIFIED = 0;
+  TENSOR_D_TYPE_FLOAT32 = 1;
+  TENSOR_D_TYPE_FLOAT16 = 2;
+  TENSOR_D_TYPE_BFLOAT16 = 3;
+  TENSOR_D_TYPE_INT64 = 4;
+  TENSOR_D_TYPE_BOOL = 5;
+}
+
+message Tensor {
+  string name = 1;
+  TensorDType dtype = 2;
+  repeated int64 shape = 3;
+  bytes little_endian_data = 4;
+}
+
+message TensorSet {
+  string schema = 1;
+  repeated Tensor tensors = 2;
+}

@@ -1,0 +1,16 @@
+[package]
+name = "mindclade-protocols"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+prost = "=0.14.1"
+prost-types = "=0.14.1"
+tonic = { version = "=0.14.2", default-features = false, features = ["codegen", "transport"] }
+tonic-prost = "=0.14.2"
+
+[lints]
+workspace = true

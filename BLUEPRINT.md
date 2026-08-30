@@ -5,6 +5,21 @@
 **Source:** Mindclade Monorepo Blueprint v3.4.0, Appendix A3 and Appendix A6
 **Evidence boundary:** this is the approved target namespace and activation-stub manifest; it is not evidence that every path is implemented.
 
+## Active Q0 implementation slice
+
+The first implementation wave activates the independently versioned `models/`,
+`training/`, and `inference/` Python distributions; `v1alpha1` common, artifact, job,
+model, inference, and admin protocols; the Go control plane and runtime gateway; the
+Rust artifact proxy; the Python inference worker; and a render-only development GKE
+deployment package. The `v1alpha1` directories are pre-stable predecessors of the
+target `v1` namespaces listed below and do not assert that unrelated blueprint paths
+exist.
+
+CladeFold Q0 is a random-initialized systems reference. It publishes no pretrained
+weights and makes no biological accuracy, scientific, clinical, or production-fitness
+claim. Promotion is restricted to the development stage until separately governed
+qualification evidence exists.
+
 This document consolidates the complete product-monorepo tree and the full trees for the organization-wide GitHub policy, GitHub configuration, bootstrap, infrastructure-live, and GitOps repositories. Tree listings are reproduced without ellipses or omitted branches.
 
 ## Activation and stub contract

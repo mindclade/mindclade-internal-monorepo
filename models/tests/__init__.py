@@ -1,0 +1,1 @@
+"""Model distribution contract tests."""

@@ -1,0 +1,18 @@
+apiVersion: components.mindclade.dev/v1alpha1
+kind: Component
+metadata:
+  name: control-plane
+spec:
+  type: service
+  owner: "@mindclade/platform-runtime"
+  maturity: experimental
+  visibility: private
+  dataClassification: internal
+  description: Tenant-scoped inference admission and development state machine behind a durable-store boundary.
+  dependencies: [protocols]
+  release:
+    mode: oci-image
+    artifact: control-plane
+    version: null
+    public: false
+    controls: []

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "mindclade-training"
+version = "0.1.0"
+description = "Reproducible training contracts and reference PyTorch engine for Mindclade models"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Mindclade-Proprietary"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Mindclade" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "mindclade-models==0.1.0",
+  "PyYAML>=6.0.2,<7",
+  "torch>=2.13,<2.14",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4,<9"]
+
+[project.scripts]
+mindclade-training = "mindclade.training.cli.main:main"
+
+[tool.uv.build-backend]
+module-name = "mindclade.training"
+module-root = "src"
+namespace = true
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+markers = [
+  "gpu: requires a CUDA accelerator",
+  "distributed: requires two or more CUDA devices",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["mindclade"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["src"]
+extraPaths = ["../models/src"]
+# PyTorch's public distributed APIs still expose partially unknown types.
+# Keep strict checking for our contracts while isolating those upstream gaps.
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
