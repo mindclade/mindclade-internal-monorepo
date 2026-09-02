@@ -24,6 +24,7 @@ spec:
           env:
             - {name: MINDCLADE_RUNTIME_GATEWAY_ADDRESS, value: "0.0.0.0:8080"}
             - {name: MINDCLADE_CONTROL_PLANE_URL, value: "http://control-plane:8081"}
+            - {name: MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS, value: "70"}
             - {name: MINDCLADE_OIDC_ISSUER, value: "https://identity.mindclade.invalid/"}
             - {name: MINDCLADE_OIDC_AUDIENCE, value: "mindclade-api"}
             - {name: MINDCLADE_OIDC_KEY_ID, value: "replace-by-identity-operator"}

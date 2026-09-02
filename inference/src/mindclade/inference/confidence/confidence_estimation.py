@@ -2,22 +2,39 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 import torch
 
 
-def estimate_confidence(values: torch.Tensor, mask: torch.Tensor) -> float:
-    """Return the mean valid confidence, accepting probabilities or logits."""
+class ConfidenceRepresentation(StrEnum):
+    PROBABILITIES = "probabilities"
+    LOGITS = "logits"
+
+
+def estimate_confidence(
+    values: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    representation: ConfidenceRepresentation,
+) -> float:
+    """Return mean valid confidence under an explicit representation contract."""
 
     if values.shape != mask.shape or mask.dtype is not torch.bool:
         raise TypeError("confidence values and boolean mask must have identical shapes")
+    if not isinstance(representation, ConfidenceRepresentation):
+        raise TypeError("representation must be a ConfidenceRepresentation")
     if not mask.any():
         raise ValueError("confidence mask cannot be empty")
     valid = values.float()[mask]
     if not torch.isfinite(valid).all():
         raise FloatingPointError("confidence contains non-finite values")
-    if float(valid.min()) < 0.0 or float(valid.max()) > 1.0:
+    if representation is ConfidenceRepresentation.PROBABILITIES:
+        if float(valid.min()) < 0.0 or float(valid.max()) > 1.0:
+            raise ValueError("confidence probabilities must be within [0, 1]")
+    else:
         valid = torch.sigmoid(valid)
-    return float(valid.mean().clamp(0.0, 1.0))
+    return float(valid.mean())
 
 
 def token_confidence_from_atoms(

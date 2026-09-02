@@ -26,12 +26,14 @@ class TrainingProgram:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("training program name must be non-empty")
-        if self.max_steps <= 0:
-            raise ValueError("max_steps must be positive")
-        if self.gradient_accumulation_steps <= 0:
-            raise ValueError("gradient_accumulation_steps must be positive")
-        if self.checkpoint_every_steps <= 0:
-            raise ValueError("checkpoint_every_steps must be positive")
+        for name in (
+            "max_steps",
+            "gradient_accumulation_steps",
+            "checkpoint_every_steps",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
 
     def to_dict(self) -> dict[str, Any]:
         return {

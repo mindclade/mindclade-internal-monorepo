@@ -13,7 +13,10 @@ import (
 
 var ErrAttemptReconciliation = errors.New("attempt reconciliation failed")
 
-const managedJobSetSelector = "app.kubernetes.io/name=inference-attempt"
+const (
+	managedJobSetPageLimit = 10
+	managedJobSetSelector  = "app.kubernetes.io/name=inference-attempt,mindclade.dev/managed-by=control-plane"
+)
 
 type kubernetesConditionObservation struct {
 	Type               string `json:"type"`
@@ -178,21 +181,38 @@ func (r *JobSetReconciler) ReconcileOnce(ctx context.Context) error {
 
 func (r *JobSetReconciler) list(ctx context.Context) ([]kubernetesJobSetObservation, error) {
 	collectionPath := fmt.Sprintf(
-		"/apis/jobset.x-k8s.io/v1alpha2/namespaces/%s/jobsets?labelSelector=%s",
+		"/apis/jobset.x-k8s.io/v1alpha2/namespaces/%s/jobsets",
 		r.config.Namespace,
-		url.QueryEscape(managedJobSetSelector),
 	)
-	payload, err := r.client.Read(ctx, collectionPath)
-	if err != nil {
-		return nil, fmt.Errorf("%w: list managed JobSets: %v", ErrAttemptReconciliation, err)
+	observations := make([]kubernetesJobSetObservation, 0)
+	seenContinuation := make(map[string]bool)
+	continuation := ""
+	for {
+		query := url.Values{}
+		query.Set("labelSelector", managedJobSetSelector)
+		query.Set("limit", strconv.Itoa(managedJobSetPageLimit))
+		if continuation != "" {
+			query.Set("continue", continuation)
+		}
+		payload, err := r.client.Read(ctx, collectionPath+"?"+query.Encode())
+		if err != nil {
+			return nil, fmt.Errorf("%w: list managed JobSets: %v", ErrAttemptReconciliation, err)
+		}
+		var page kubernetesJobSetList
+		if err := json.Unmarshal(payload, &page); err != nil ||
+			page.APIVersion != "jobset.x-k8s.io/v1alpha2" || page.Kind != "JobSetList" {
+			return nil, fmt.Errorf("%w: invalid JobSet list page", ErrAttemptReconciliation)
+		}
+		observations = append(observations, page.Items...)
+		continuation = page.Metadata.Continue
+		if continuation == "" {
+			return observations, nil
+		}
+		if seenContinuation[continuation] {
+			return nil, fmt.Errorf("%w: repeated JobSet continuation token", ErrAttemptReconciliation)
+		}
+		seenContinuation[continuation] = true
 	}
-	var list kubernetesJobSetList
-	if err := json.Unmarshal(payload, &list); err != nil ||
-		list.APIVersion != "jobset.x-k8s.io/v1alpha2" || list.Kind != "JobSetList" ||
-		list.Metadata.Continue != "" {
-		return nil, fmt.Errorf("%w: invalid or paginated JobSet list", ErrAttemptReconciliation)
-	}
-	return list.Items, nil
 }
 
 func (r *JobSetReconciler) validateIdentity(observation kubernetesJobSetObservation, job Job) error {

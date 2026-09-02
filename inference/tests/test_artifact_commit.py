@@ -111,3 +111,22 @@ def test_stream_rejects_events_after_terminal(tmp_path) -> None:
     assert receipt.event_count == 1
     payload = json.loads((tmp_path / "events.jsonl").read_text(encoding="utf-8"))
     assert payload["kind"] == "completed"
+
+
+def test_stream_size_rejection_does_not_advance_sequence(tmp_path) -> None:
+    writer = StreamWriter(tmp_path / "events.jsonl", request_id="request-1", max_bytes=256)
+    writer.write(InferenceStreamEvent("request-1", 0, StreamEventKind.ACCEPTED))
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        writer.write(
+            InferenceStreamEvent(
+                "request-1",
+                1,
+                StreamEventKind.PROGRESS,
+                {"detail": "x" * 512},
+            )
+        )
+
+    writer.write(InferenceStreamEvent("request-1", 1, StreamEventKind.COMPLETED))
+    receipt = writer.close()
+    assert receipt.event_count == 2

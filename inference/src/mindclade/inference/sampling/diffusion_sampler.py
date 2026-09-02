@@ -56,6 +56,15 @@ class DiffusionSampler:
         center = (coordinates * weights).sum(dim=1, keepdim=True) / count
         return (coordinates - center) * weights
 
+    @staticmethod
+    def _masked_rms_displacement(
+        coordinates: torch.Tensor,
+        previous_evaluation: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> float:
+        differences = (coordinates - previous_evaluation).float()[atom_mask]
+        return float(torch.sqrt(differences.square().mean()))
+
     def sample(
         self,
         *,
@@ -99,6 +108,7 @@ class DiffusionSampler:
             patience=1,
         )
         ledger = BudgetLedger(active_policy)
+        previous_evaluation: torch.Tensor
         if resume is not None:
             if None in (request_fingerprint, model_digest):
                 raise ValueError("resume requires request and model digests")
@@ -116,11 +126,29 @@ class DiffusionSampler:
             coordinates = resume.coordinates.to(device=device, dtype=dtype)
             if coordinates.shape[:2] != atom_mask.shape:
                 raise ValueError("resume coordinates do not match atom_mask")
+            previous_evaluation = resume.last_evaluation_coordinates.to(device=device, dtype=dtype)
+            if previous_evaluation.shape != coordinates.shape:
+                raise ValueError("resume evaluation coordinates do not match atom_mask")
             ledger = BudgetLedger(
                 active_policy,
                 steps=resume.completed_steps,
                 candidates=resume.consumed_candidates,
             )
+            previous_observation = resume.stopping_state.previous_observation
+            if policy is None and previous_observation is not None:
+                raise ValueError("fixed sampling cannot restore adaptive stopping state")
+            if policy is not None:
+                last_due_step = start_step - (start_step % policy.evaluation_interval)
+                expected_step: int | None = (
+                    last_due_step if last_due_step >= policy.min_steps else None
+                )
+                observed_step = (
+                    previous_observation.completed_steps
+                    if previous_observation is not None
+                    else None
+                )
+                if observed_step != expected_step:
+                    raise ValueError("resume frontier has incomplete adaptive stopping state")
         else:
             ledger.consume(candidates=1)
             generator = torch.Generator(device=device)
@@ -130,13 +158,19 @@ class DiffusionSampler:
                 * self.sigma_max
             )
             coordinates = self._masked_center(coordinates, atom_mask)
+            previous_evaluation = coordinates.detach().clone()
 
         trajectory: list[torch.Tensor] = []
         if return_trajectory:
             trajectory.append(coordinates.detach().clone())
-        stopping = StoppingRule(active_policy)
-        previous_evaluation = coordinates.detach().clone()
-        final_confidence: float | None = None
+        stopping = StoppingRule(
+            active_policy,
+            state=resume.stopping_state if resume is not None else None,
+        )
+        previous_observation = stopping.state.previous_observation
+        final_confidence = (
+            previous_observation.calibrated_confidence if previous_observation is not None else None
+        )
         stop_reason = "budget-exhausted"
 
         for step_index in range(start_step, steps):
@@ -164,24 +198,24 @@ class DiffusionSampler:
             if return_trajectory:
                 trajectory.append(coordinates.detach().clone())
 
-            if pause_after_steps is not None and completed >= pause_after_steps:
-                stop_reason = "paused"
-                break
-
             if policy is not None and policy.should_evaluate(completed):
                 final_confidence = float(confidence(coordinates))  # type: ignore[misc]
-                displacement = torch.sqrt(
-                    torch.mean((coordinates - previous_evaluation).float().square())
-                ).item()
+                displacement = self._masked_rms_displacement(
+                    coordinates, previous_evaluation, atom_mask
+                )
                 decision = stopping.observe(Observation(completed, final_confidence, displacement))
                 previous_evaluation = coordinates.detach().clone()
                 if decision.stop:
                     stop_reason = decision.reason
                     break
 
+            if pause_after_steps is not None and completed >= pause_after_steps:
+                stop_reason = "paused"
+                break
+
         completed_steps = ledger.snapshot().consumed_steps
         frontier = None
-        if request_fingerprint is not None and model_digest is not None:
+        if stop_reason == "paused" and request_fingerprint is not None and model_digest is not None:
             frontier = ResumeFrontier.capture(
                 request_fingerprint=request_fingerprint,
                 model_digest=model_digest,
@@ -190,6 +224,8 @@ class DiffusionSampler:
                 budget=ledger.snapshot(),
                 seed=seed,
                 coordinates=coordinates,
+                last_evaluation_coordinates=previous_evaluation,
+                stopping_state=stopping.state,
             )
         return SamplingOutcome(
             coordinates=coordinates,

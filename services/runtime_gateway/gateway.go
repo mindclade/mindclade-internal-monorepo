@@ -1,6 +1,7 @@
 package runtimegateway
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -11,6 +12,13 @@ import (
 )
 
 const maximumRequestBytes int64 = 1 << 20
+
+const defaultControlPlaneTimeout = 3 * time.Minute
+
+const (
+	publicReadTimeout      = 15 * time.Second
+	responseDeadlineMargin = 5 * time.Second
+)
 
 // Gateway authenticates, authorizes path scope, and relays requests without tensor logging.
 type Gateway struct {
@@ -23,7 +31,7 @@ type Gateway struct {
 
 func New(authenticator Authenticator, upstream *url.URL, client *http.Client, logger *slog.Logger, identitySigner *InternalIdentitySigner) *Gateway {
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{Timeout: defaultControlPlaneTimeout}
 	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -91,7 +99,7 @@ func (g *Gateway) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	started := time.Now()
 	upstreamResponse, err := g.client.Do(upstreamRequest)
 	if err != nil {
-		if errors.Is(err, http.ErrHandlerTimeout) {
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			writeGatewayError(response, http.StatusGatewayTimeout, "upstream deadline exceeded")
 		} else {
 			writeGatewayError(response, http.StatusBadGateway, "control plane unavailable")
@@ -112,6 +120,32 @@ func (g *Gateway) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		"project_id", project,
 		"response_copy_error", copyErr != nil,
 	)
+}
+
+// NewPublicHTTPServer applies the bounded public HTTP policy around a gateway.
+func NewPublicHTTPServer(address string, handler http.Handler, controlPlaneBudget time.Duration) *http.Server {
+	return newPublicHTTPServer(address, handler, controlPlaneBudget, publicReadTimeout)
+}
+
+// ControlPlaneClientTimeout leaves room beyond the control plane's complete
+// server-side deadline for the response to traverse the gateway connection.
+func ControlPlaneClientTimeout(controlPlaneBudget time.Duration) time.Duration {
+	return controlPlaneBudget + responseDeadlineMargin
+}
+
+func newPublicHTTPServer(
+	address string,
+	handler http.Handler,
+	controlPlaneBudget time.Duration,
+	readTimeout time.Duration,
+) *http.Server {
+	upstreamTimeout := ControlPlaneClientTimeout(controlPlaneBudget)
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: readTimeout,
+		WriteTimeout: readTimeout + upstreamTimeout + responseDeadlineMargin, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 32 * 1024,
+	}
 }
 
 func bearerToken(value string) (string, bool) {

@@ -124,6 +124,20 @@ def test_rendered_runtime_contracts() -> None:
         for item in monitors
         for endpoint in item["spec"]["endpoints"]
     )
+    services = [document for document in documents if document.get("kind") == "Service"]
+    for monitor in monitors:
+        selector = monitor["spec"]["selector"]["matchLabels"]
+        matching = [
+            service
+            for service in services
+            if all(
+                service.get("metadata", {}).get("labels", {}).get(key) == value
+                for key, value in selector.items()
+            )
+        ]
+        assert matching, monitor["metadata"]["name"]
+        ports = {port["name"] for service in matching for port in service["spec"]["ports"]}
+        assert all(endpoint["port"] in ports for endpoint in monitor["spec"]["endpoints"])
 
     policies = [document for document in documents if document.get("kind") == "NetworkPolicy"]
     policy_names = {item["metadata"]["name"] for item in policies}
@@ -173,6 +187,12 @@ def test_rendered_images_are_bound_to_values() -> None:
         item["name"]: item.get("value")
         for item in deployments["control-plane"]["spec"]["template"]["spec"]["containers"][0]["env"]
     }
+    gateway_environment = {
+        item["name"]: item.get("value")
+        for item in deployments["runtime-gateway"]["spec"]["template"]["spec"]["containers"][0][
+            "env"
+        ]
+    }
     assert control_environment["MINDCLADE_WORKER_IMAGE"] == images["inferenceWorker"]
     queue_seconds = int(control_environment["MINDCLADE_QUEUE_DEADLINE_SECONDS"])
     startup_seconds = int(control_environment["MINDCLADE_ATTEMPT_STARTUP_DEADLINE_SECONDS"])
@@ -180,6 +200,12 @@ def test_rendered_images_are_bound_to_values() -> None:
     reconcile_seconds = int(control_environment["MINDCLADE_JOBSET_RECONCILE_INTERVAL_SECONDS"])
     capability_seconds = int(control_environment["MINDCLADE_STAGING_CAPABILITY_TTL_SECONDS"])
     launch_seconds = int(control_environment["MINDCLADE_KUBERNETES_LAUNCH_TIMEOUT_SECONDS"])
+    verify_seconds = int(control_environment["MINDCLADE_ARTIFACT_VERIFY_TIMEOUT_SECONDS"])
+    handler_seconds = int(control_environment["MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS"])
+    assert handler_seconds == int(
+        gateway_environment["MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS"]
+    )
+    assert handler_seconds >= 15 + max(5 * launch_seconds, verify_seconds) + 5
     assert capability_seconds >= (
         queue_seconds
         + startup_seconds

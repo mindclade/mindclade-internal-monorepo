@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from ..confidence.calibration import ConfidenceCalibrator
-from ..confidence.confidence_estimation import estimate_confidence
+from ..confidence.confidence_estimation import ConfidenceRepresentation, estimate_confidence
 from ..contracts.result_contract import InferenceCandidate
 from ..postprocessing.coordinate_projection import center_coordinates
 from ..postprocessing.structure_validation import validate_structure
@@ -61,6 +61,12 @@ def _field(output: Any, *names: str) -> Any:
     raise ValueError(f"model output is missing one of: {', '.join(names)}")
 
 
+def _optional_field(output: Any, name: str) -> Any | None:
+    if isinstance(output, dict):
+        return output.get(name)
+    return getattr(output, name, None)
+
+
 def build_candidates(
     output: Any,
     *,
@@ -75,10 +81,15 @@ def build_candidates(
     accepted for batch size one. Any future execution-time request co-batching
     must preserve each request's row-to-seed mapping before calling this
     boundary; the current dynamic batcher only groups request envelopes.
+    Model-provided ``sample_confidence`` is already calibrated and is the
+    authoritative ranking score; ``calibrator`` applies only when it is absent.
     """
 
     coordinates = _field(output, "coordinates", "atom_coordinates")
     confidence = _field(output, "confidence", "atom_confidence")
+    sample_confidence = _optional_field(output, "sample_confidence")
+    if not isinstance(coordinates, torch.Tensor) or not isinstance(confidence, torch.Tensor):
+        raise TypeError("coordinates and atom confidence must be tensors")
     if coordinates.ndim == 3:
         coordinates = coordinates.unsqueeze(1)
     if coordinates.ndim != 4 or coordinates.shape[-1] != 3:
@@ -92,14 +103,32 @@ def build_candidates(
         confidence = confidence.unsqueeze(1).expand(-1, coordinates.shape[1], -1)
     if confidence.ndim != 3:
         raise ValueError("confidence must have shape [B, S, A] or [B, A]")
+    if confidence.shape != coordinates.shape[:3]:
+        raise ValueError("confidence dimensions must match coordinates")
+    if sample_confidence is not None:
+        if not isinstance(sample_confidence, torch.Tensor):
+            raise TypeError("sample_confidence must be a tensor")
+        if sample_confidence.ndim != 2 or sample_confidence.shape != coordinates.shape[:2]:
+            raise ValueError("sample_confidence must have shape [B, S]")
 
     active_calibrator = calibrator or ConfidenceCalibrator.identity()
     candidates: list[InferenceCandidate] = []
     for index in range(coordinates.shape[1]):
         candidate_coordinates = center_coordinates(coordinates[:, index], atom_mask)
         validate_structure(candidate_coordinates, atom_mask=atom_mask)
-        raw = estimate_confidence(confidence[:, index], atom_mask)
-        calibrated = active_calibrator.calibrate_scalar(raw)
+        raw = estimate_confidence(
+            confidence[:, index],
+            atom_mask,
+            representation=ConfidenceRepresentation.PROBABILITIES,
+        )
+        if sample_confidence is None:
+            calibrated = active_calibrator.calibrate_scalar(raw)
+        else:
+            calibrated = estimate_confidence(
+                sample_confidence[:, index],
+                torch.ones_like(sample_confidence[:, index], dtype=torch.bool),
+                representation=ConfidenceRepresentation.PROBABILITIES,
+            )
         candidates.append(
             InferenceCandidate(
                 candidate_id=f"candidate-{index:04d}",

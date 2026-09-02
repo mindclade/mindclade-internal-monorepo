@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from mindclade.inference.compilation.compile_key import CompileKey
 from mindclade.inference.compilation.compiled_variant_cache import (
     CompiledVariant,
@@ -27,10 +28,14 @@ def qualification_key(mode: ExecutionMode = ExecutionMode.COMPILED) -> Qualifica
         serving_revision_digest=sha("b"),
         mode=mode,
         device_type="cpu",
+        device_capability="generic",
         dtype="float32",
         shape_signature=(1, 2, 3, 2),
         sampler_digest=sha("c"),
         runtime_config_digest=sha("d"),
+        output_contract_digest=sha("e"),
+        torch_version="2.13.0",
+        compiler_version="inductor-v1",
     )
 
 
@@ -81,3 +86,61 @@ def test_compiled_cache_is_exact_keyed_and_bounded() -> None:
     assert cache.get(first_key) is first
     assert cache.put(second) == (first_key,)
     assert cache.get(first_key) is None
+
+
+def test_qualification_key_binds_the_complete_compile_identity() -> None:
+    compile_key = CompileKey(
+        model_digest=sha("a"),
+        serving_revision_digest=sha("b"),
+        runtime_config_digest=sha("c"),
+        sampler_digest=sha("d"),
+        output_contract_digest=sha("e"),
+        device_type="cuda",
+        device_capability="sm_90",
+        dtype="float32",
+        shape_signature=(1, 2, 3, 2),
+        torch_version="2.13.0",
+        compiler_version="inductor-v1",
+    )
+    key = QualificationKey.from_compile_key(compile_key, mode=ExecutionMode.COMPILED)
+
+    assert key.output_contract_digest == compile_key.output_contract_digest
+    assert key.device_capability == compile_key.device_capability
+    assert key.torch_version == compile_key.torch_version
+    assert key.compiler_version == compile_key.compiler_version
+    assert (
+        len(
+            {
+                key.digest,
+                replace(key, output_contract_digest=sha("1")).digest,
+                replace(key, device_capability="sm_89").digest,
+                replace(key, torch_version="2.14.0").digest,
+                replace(key, compiler_version="inductor-v2").digest,
+            }
+        )
+        == 5
+    )
+
+
+@pytest.mark.parametrize(
+    ("max_absolute_error", "max_relative_error"),
+    [
+        (float("nan"), 0.0),
+        (float("inf"), 0.0),
+        (float("-inf"), 0.0),
+        (0.0, float("nan")),
+        (0.0, float("inf")),
+        (0.0, float("-inf")),
+    ],
+)
+def test_qualification_rejects_non_finite_error_evidence(
+    max_absolute_error: float,
+    max_relative_error: float,
+) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        ModeQualification.passed_record(
+            qualification_key(),
+            evidence_digest=sha("f"),
+            max_absolute_error=max_absolute_error,
+            max_relative_error=max_relative_error,
+        )

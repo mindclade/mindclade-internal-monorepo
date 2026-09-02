@@ -25,8 +25,18 @@ class OptimizerConfig:
     def __post_init__(self) -> None:
         if self.name != "adamw":
             raise ValueError(f"unsupported optimizer {self.name!r}; supported: adamw")
-        if not math.isfinite(self.learning_rate) or self.learning_rate <= 0.0:
-            raise ValueError("learning_rate must be finite and positive")
+        for name in (
+            "learning_rate",
+            "beta1",
+            "beta2",
+            "epsilon",
+            "weight_decay",
+            "max_gradient_norm",
+        ):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite")
+        if self.learning_rate <= 0.0:
+            raise ValueError("learning_rate must be positive")
         if not (0.0 <= self.beta1 < 1.0 and 0.0 <= self.beta2 < 1.0):
             raise ValueError("AdamW betas must be in [0, 1)")
         if self.epsilon <= 0.0 or self.weight_decay < 0.0:

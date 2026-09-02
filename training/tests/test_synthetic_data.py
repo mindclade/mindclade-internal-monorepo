@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from mindclade.models.components.diffusion import VESchedule
 from mindclade.training.core.data import DeterministicSyntheticDataset, SyntheticSplit
 
 
@@ -40,3 +41,41 @@ def test_different_seed_changes_values_but_not_identity() -> None:
     right = DeterministicSyntheticDataset(SyntheticSplit.TEST, seed=2)[0]
     assert left.sample_id == right.sample_id
     assert not torch.equal(left.fields["noisy_coordinates"], right.fields["noisy_coordinates"])
+
+
+def test_synthetic_perturbation_uses_ve_schedule_sigma() -> None:
+    first_schedule = VESchedule(0.01, 20.0)
+    second_schedule = VESchedule(0.10, 2.0)
+    first = DeterministicSyntheticDataset(
+        SyntheticSplit.TRAIN,
+        seed=41,
+        sigma_min=first_schedule.sigma_min,
+        sigma_max=first_schedule.sigma_max,
+    )[3]
+    second = DeterministicSyntheticDataset(
+        SyntheticSplit.TRAIN,
+        seed=41,
+        sigma_min=second_schedule.sigma_min,
+        sigma_max=second_schedule.sigma_max,
+    )[3]
+
+    torch.testing.assert_close(
+        first.fields["target_coordinates"],
+        second.fields["target_coordinates"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        first.fields["diffusion_time"],
+        second.fields["diffusion_time"],
+        rtol=0.0,
+        atol=0.0,
+    )
+    time = first.fields["diffusion_time"]
+    standardized_first = (
+        first.fields["noisy_coordinates"] - first.fields["target_coordinates"]
+    ) / first_schedule.sigma(time)
+    standardized_second = (
+        second.fields["noisy_coordinates"] - second.fields["target_coordinates"]
+    ) / second_schedule.sigma(time)
+    torch.testing.assert_close(standardized_first, standardized_second)

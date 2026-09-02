@@ -142,6 +142,17 @@ def test_executable_semantics_match_openapi_and_protobuf(tmp_path: Path) -> None
     submit_contract = contract["submit_inference"]
     assert isinstance(submit_contract, dict)
     submit_schema = openapi["components"]["schemas"][submit_contract["openapi_schema"]]
+    idempotency_parameters = [
+        parameter
+        for parameter in openapi["paths"][
+            "/tenants/{tenantId}/projects/{projectId}/inference-jobs"
+        ]["post"]["parameters"]
+        if isinstance(parameter, dict) and parameter.get("name") == "Idempotency-Key"
+    ]
+    assert len(idempotency_parameters) == 1
+    idempotency_pattern = submit_contract["idempotency_key_pattern"]
+    assert isinstance(idempotency_pattern, str)
+    assert idempotency_parameters[0]["schema"]["pattern"] == idempotency_pattern
     options = _proto_message(image, submit_contract["proto_message"])
     option_fields = _named_entries(options, "field")
     numeric_fields = submit_contract["numeric_fields"]
@@ -164,6 +175,7 @@ def test_executable_semantics_match_openapi_and_protobuf(tmp_path: Path) -> None
         assert documented_range in inference_proto
     control_source = _runtime_source_if_available(submit_contract["runtime_source"])
     if control_source is not None:
+        assert f"regexp.MustCompile(`{idempotency_pattern}`)" in control_source
         seed_limits = numeric_fields["seed"]
         step_limits = numeric_fields["diffusion_steps"]
         assert isinstance(seed_limits, dict) and isinstance(step_limits, dict)
@@ -245,7 +257,7 @@ def test_executable_semantics_match_openapi_and_protobuf(tmp_path: Path) -> None
     response_field = _named_entries(response, "field")[download_contract["data_field"]]
     assert response_field["type"] == download_contract["data_type"]
     if artifact_runtime_source is not None:
-        assert '(&Method::Get, ["v1alpha1", "artifacts", digest])' in artifact_runtime_source
+        assert '(Method::GET, ["v1alpha1", "artifacts", digest])' in artifact_runtime_source
 
 
 def test_release_manifest_is_development_only() -> None:

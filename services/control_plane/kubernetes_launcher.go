@@ -23,13 +23,16 @@ import (
 )
 
 const (
-	workerArtifactRoot    = "/var/run/mindclade-artifacts"
-	workerResultRoot      = "/var/run/mindclade-results"
-	workerOutputDirectory = workerResultRoot + "/output"
-	maximumBundleBytes    = uint64(8 * 1024 * 1024 * 1024)
-	maximumInputBytes     = uint64(4 * 1024 * 1024 * 1024)
-	maximumAPIResponse    = int64(1 << 20)
-	minimumLifecycleSlack = time.Minute
+	workerArtifactRoot          = "/var/run/mindclade-artifacts"
+	workerResultRoot            = "/var/run/mindclade-results"
+	workerOutputDirectory       = workerResultRoot + "/output"
+	maximumBundleBytes          = uint64(8 * 1024 * 1024 * 1024)
+	maximumExpandedBundleBytes  = uint64(20 * 1024 * 1024 * 1024)
+	maximumInputBytes           = uint64(4 * 1024 * 1024 * 1024)
+	workerScratchBytes          = uint64(2 * 1024 * 1024 * 1024)
+	minimumArtifactScratchBytes = maximumBundleBytes + maximumExpandedBundleBytes + maximumInputBytes
+	maximumAPIResponse          = int64(1 << 20)
+	minimumLifecycleSlack       = time.Minute
 )
 
 var (
@@ -270,8 +273,12 @@ func (c KubernetesAttemptLauncherConfig) Validate() error {
 			return fmt.Errorf("%w: %s URL is invalid", ErrInvalidRequest, name)
 		}
 	}
-	if !validQuantity(c.ResultStorageRequest) || !validQuantity(c.ArtifactScratchLimit) {
-		return fmt.Errorf("%w: storage quantities must be explicit", ErrInvalidRequest)
+	_, resultStorageValid := quantityBytes(c.ResultStorageRequest)
+	artifactScratchBytes, artifactScratchValid := quantityBytes(c.ArtifactScratchLimit)
+	if !resultStorageValid || !artifactScratchValid ||
+		artifactScratchBytes < minimumArtifactScratchBytes ||
+		artifactScratchBytes > ^uint64(0)-workerScratchBytes {
+		return fmt.Errorf("%w: storage quantities must be explicit and cover admitted artifacts", ErrInvalidRequest)
 	}
 	if c.QueueDeadlineSeconds < 60 || c.QueueDeadlineSeconds > 86_400 ||
 		c.StartupDeadlineSeconds < 60 || c.StartupDeadlineSeconds > 3_600 ||
@@ -291,9 +298,38 @@ func (c KubernetesAttemptLauncherConfig) minimumStagingCapabilityTTL() time.Dura
 	return boundedLifecycle + c.LaunchTimeout + 2*c.ReconcileInterval + minimumLifecycleSlack
 }
 
-func validQuantity(value string) bool {
+func quantityBytes(value string) (uint64, bool) {
 	matched, _ := regexp.MatchString(`^[1-9][0-9]*(?:Mi|Gi)$`, value)
-	return matched
+	if !matched {
+		return 0, false
+	}
+	multiplier := uint64(1024 * 1024)
+	number := strings.TrimSuffix(value, "Mi")
+	if strings.HasSuffix(value, "Gi") {
+		multiplier *= 1024
+		number = strings.TrimSuffix(value, "Gi")
+	}
+	quantity, err := strconv.ParseUint(number, 10, 64)
+	if err != nil || quantity > ^uint64(0)/multiplier {
+		return 0, false
+	}
+	return quantity * multiplier, true
+}
+
+func binaryQuantity(bytes uint64) string {
+	const gibibyte = uint64(1024 * 1024 * 1024)
+	if bytes%gibibyte == 0 {
+		return strconv.FormatUint(bytes/gibibyte, 10) + "Gi"
+	}
+	return strconv.FormatUint(bytes/(1024*1024), 10) + "Mi"
+}
+
+func (c KubernetesAttemptLauncherConfig) podEphemeralStorageLimit() string {
+	artifactBytes, valid := quantityBytes(c.ArtifactScratchLimit)
+	if !valid || artifactBytes > ^uint64(0)-workerScratchBytes {
+		return ""
+	}
+	return binaryQuantity(artifactBytes + workerScratchBytes)
 }
 
 // KubernetesAttemptLauncher creates one suspended JobSet. The JobSet is not
@@ -369,39 +405,34 @@ func (l *KubernetesAttemptLauncher) Launch(parent context.Context, attempt Attem
 	defer cancel()
 
 	jobSetCreated := false
-	secretCreated := false
-	pvcCreated := false
 	defer func() {
-		if launchErr == nil {
+		if launchErr == nil || !jobSetCreated {
 			return
 		}
 		cleanupContext := context.Background()
-		if jobSetCreated {
-			if err := deleteAndObserveKubernetesResource(
-				cleanupContext,
-				l.client,
-				jobSetPath+"/"+baseName,
-				l.config.LaunchTimeout,
-			); err != nil {
-				launchErr = errors.Join(launchErr, fmt.Errorf("observe launch rollback: %w", err))
-				// Keep the Secret and PVC available if the JobSet might still run.
-				return
-			}
+		if err := deleteAndObserveKubernetesResource(
+			cleanupContext,
+			l.client,
+			jobSetPath+"/"+baseName,
+			l.config.LaunchTimeout,
+		); err != nil {
+			launchErr = errors.Join(launchErr, fmt.Errorf("observe launch rollback: %w", err))
+			// Keep dependencies available if the JobSet might still run.
+			return
 		}
-		if secretCreated {
+		dependencies := []struct {
+			description string
+			path        string
+		}{
+			{description: "launch Secret", path: secretPath + "/" + baseName + "-manifest"},
+			{description: "launch PVC", path: pvcPath + "/" + baseName + "-result"},
+		}
+		for _, dependency := range dependencies {
 			deleteContext, cancelDelete := context.WithTimeout(cleanupContext, l.config.LaunchTimeout)
-			err := l.client.Delete(deleteContext, secretPath+"/"+baseName+"-manifest")
+			err := l.client.Delete(deleteContext, dependency.path)
 			cancelDelete()
 			if err != nil {
-				launchErr = errors.Join(launchErr, fmt.Errorf("delete launch Secret: %w", err))
-			}
-		}
-		if pvcCreated {
-			deleteContext, cancelDelete := context.WithTimeout(cleanupContext, l.config.LaunchTimeout)
-			err := l.client.Delete(deleteContext, pvcPath+"/"+baseName+"-result")
-			cancelDelete()
-			if err != nil {
-				launchErr = errors.Join(launchErr, fmt.Errorf("delete launch PVC: %w", err))
+				launchErr = errors.Join(launchErr, fmt.Errorf("delete %s: %w", dependency.description, err))
 			}
 		}
 	}()
@@ -422,7 +453,6 @@ func (l *KubernetesAttemptLauncher) Launch(parent context.Context, attempt Attem
 	if err != nil {
 		return fmt.Errorf("create attempt manifest Secret: %w", err)
 	}
-	secretCreated = true
 	if secretIdentity.Name != baseName+"-manifest" {
 		return errors.New("created Secret identity did not match the launch request")
 	}
@@ -430,7 +460,6 @@ func (l *KubernetesAttemptLauncher) Launch(parent context.Context, attempt Attem
 	if err != nil {
 		return fmt.Errorf("create retained result PVC: %w", err)
 	}
-	pvcCreated = true
 	if pvcIdentity.Name != baseName+"-result" {
 		return errors.New("created PVC identity did not match the launch request")
 	}
@@ -605,6 +634,7 @@ func (l *KubernetesAttemptLauncher) resultPVC(baseName string) map[string]any {
 }
 
 func (l *KubernetesAttemptLauncher) jobSet(attempt AttemptLease, baseName string) map[string]any {
+	podEphemeralStorageLimit := l.config.podEphemeralStorageLimit()
 	containerSecurity := map[string]any{
 		"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
 		"capabilities": map[string]any{"drop": []string{"ALL"}},
@@ -661,8 +691,8 @@ func (l *KubernetesAttemptLauncher) jobSet(attempt AttemptLease, baseName string
 									"--artifact-proxy-url", strings.TrimRight(l.config.ArtifactProxyURL, "/"),
 								},
 								"resources": map[string]any{
-									"requests": map[string]string{"cpu": "500m", "memory": "512Mi", "ephemeral-storage": "1Gi"},
-									"limits":   map[string]string{"cpu": "2", "memory": "2Gi", "ephemeral-storage": "2Gi"},
+									"requests": map[string]string{"cpu": "500m", "memory": "512Mi", "ephemeral-storage": podEphemeralStorageLimit},
+									"limits":   map[string]string{"cpu": "2", "memory": "2Gi", "ephemeral-storage": podEphemeralStorageLimit},
 								},
 								"securityContext": containerSecurity,
 								"volumeMounts":    append(append([]any{}, commonMounts...), map[string]any{"name": "job-artifacts", "mountPath": workerArtifactRoot}),
@@ -677,8 +707,8 @@ func (l *KubernetesAttemptLauncher) jobSet(attempt AttemptLease, baseName string
 									"--artifact-proxy-url", strings.TrimRight(l.config.ArtifactProxyURL, "/"),
 								},
 								"resources": map[string]any{
-									"requests": map[string]string{"cpu": "4", "memory": "16Gi", "ephemeral-storage": "1Gi", "nvidia.com/gpu": "1"},
-									"limits":   map[string]string{"cpu": "8", "memory": "32Gi", "ephemeral-storage": "2Gi", "nvidia.com/gpu": "1"},
+									"requests": map[string]string{"cpu": "4", "memory": "16Gi", "ephemeral-storage": podEphemeralStorageLimit, "nvidia.com/gpu": "1"},
+									"limits":   map[string]string{"cpu": "8", "memory": "32Gi", "ephemeral-storage": podEphemeralStorageLimit, "nvidia.com/gpu": "1"},
 								},
 								"securityContext": containerSecurity,
 								"volumeMounts": append(append(append([]any{}, commonMounts...),

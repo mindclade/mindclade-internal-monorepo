@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	runtimegateway "github.com/mindclade/mindclade-internal-monorepo/services/runtime_gateway"
@@ -17,6 +18,15 @@ func required(name string) string {
 		log.Fatalf("%s is required", name)
 	}
 	return value
+}
+
+func requiredSeconds(name string, minimum, maximum int64) time.Duration {
+	value := required(name)
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds < minimum || seconds > maximum {
+		log.Fatalf("%s must be within %d..%d seconds", name, minimum, maximum)
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func main() {
@@ -47,12 +57,10 @@ func main() {
 	if address == "" {
 		address = "127.0.0.1:8080"
 	}
-	server := &http.Server{
-		Addr:              address,
-		Handler:           runtimegateway.New(verifier, upstream, nil, slog.Default(), identitySigner),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	controlPlaneBudget := requiredSeconds("MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS", 1, 300)
+	upstreamClient := &http.Client{Timeout: runtimegateway.ControlPlaneClientTimeout(controlPlaneBudget)}
+	handler := runtimegateway.New(verifier, upstream, upstreamClient, slog.Default(), identitySigner)
+	server := runtimegateway.NewPublicHTTPServer(address, handler, controlPlaneBudget)
 	log.Printf("runtime gateway listening on %s", address)
 	log.Fatal(server.ListenAndServe())
 }

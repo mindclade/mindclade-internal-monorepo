@@ -219,11 +219,14 @@ def decode_safetensors(payload: bytes) -> OrderedDict[str, Tensor]:
         if end - start != expected:
             raise SerializationError(f"tensor byte size does not match shape for {name!r}")
         occupied.append((start, end))
-        raw = bytearray(data[start:end])
-        try:
-            tensor = torch.frombuffer(raw, dtype=dtype).clone().reshape(shape)
-        except (RuntimeError, TypeError, ValueError) as exc:
-            raise SerializationError(f"cannot materialize tensor {name!r}") from exc
+        if expected == 0:
+            tensor = torch.empty(shape, dtype=dtype)
+        else:
+            raw = bytearray(data[start:end])
+            try:
+                tensor = torch.frombuffer(raw, dtype=dtype).clone().reshape(shape)
+            except (RuntimeError, TypeError, ValueError) as exc:
+                raise SerializationError(f"cannot materialize tensor {name!r}") from exc
         result[name] = tensor
     cursor = 0
     for start, end in sorted(occupied):

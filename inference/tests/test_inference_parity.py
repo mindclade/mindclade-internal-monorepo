@@ -8,12 +8,17 @@ from mindclade.inference.confidence.calibration import (
     CalibrationParameters,
     ConfidenceCalibrator,
 )
+from mindclade.inference.confidence.confidence_estimation import (
+    ConfidenceRepresentation,
+    estimate_confidence,
+)
 from mindclade.inference.contracts.result_contract import InferenceCandidate, InferenceResult
 from mindclade.inference.diagnostics.execution_trace import ExecutionTrace
 from mindclade.inference.diagnostics.numerical_diagnostics import summarize_tensor
 from mindclade.inference.pipeline.model_execution import ModelExecutor, ModelResolver, ResolvedModel
 from mindclade.inference.pipeline.postprocessing import build_candidates
 from mindclade.inference.pipeline.preprocessing import preprocess_request
+from mindclade.inference.postprocessing.structure_validation import validate_structure
 from mindclade.inference.ranking.candidate_ranker import CandidateRanker
 from mindclade.inference.sampling import derive_sample_seed
 from mindclade.inference.sampling.diffusion_sampler import DiffusionSampler
@@ -242,7 +247,114 @@ def test_postprocessing_calibration_ranking_and_diagnostics_are_coherent() -> No
         tenant_id="tenant-secret",
         coordinates=ranked.selected.coordinates,
         execution_mode="eager",
+        subject="customer-subject",
+        id="raw-identifier",
+        error="artifact for customer-subject failed",
     )
     assert event.attributes["tenant_id"] == "<redacted>"
     assert event.attributes["coordinates"] == "<redacted>"
     assert event.attributes["execution_mode"] == "eager"
+    assert event.attributes["subject"] == trace.pseudonym("customer-subject")
+    assert event.attributes["id"] == trace.pseudonym("raw-identifier")
+    assert event.attributes["error"] == trace.pseudonym("artifact for customer-subject failed")
+
+
+def test_model_sample_confidence_controls_candidate_ranking() -> None:
+    output = SimpleNamespace(
+        coordinates=torch.tensor(
+            [
+                [
+                    [[1.0, 0, 0], [-1.0, 0, 0], [0, 0, 0]],
+                    [[2.0, 0, 0], [-2.0, 0, 0], [0, 0, 0]],
+                ]
+            ]
+        ),
+        atom_confidence=torch.tensor([[[0.9, 0.9, 0.0], [0.1, 0.1, 0.0]]]),
+        sample_confidence=torch.tensor([[0.2, 0.8]]),
+    )
+    candidates = build_candidates(
+        output,
+        atom_mask=torch.tensor([[True, True, False]]),
+        seeds=(10, 11),
+        steps=8,
+    )
+
+    assert candidates[0].confidence > candidates[1].confidence
+    assert candidates[0].calibrated_confidence == pytest.approx(0.2)
+    assert candidates[1].calibrated_confidence == pytest.approx(0.8)
+    ranked = CandidateRanker().rank(candidates, request_fingerprint=sha("a"))
+    assert ranked.selected.candidate_id == "candidate-0001"
+
+
+@pytest.mark.parametrize(
+    ("sample_confidence", "error"),
+    [
+        (torch.tensor([[float("nan"), 0.5]]), FloatingPointError),
+        (torch.tensor([[1.1, 0.5]]), ValueError),
+        (torch.tensor([0.5, 0.5]), ValueError),
+    ],
+)
+def test_postprocessing_rejects_invalid_sample_confidence(
+    sample_confidence: torch.Tensor,
+    error: type[Exception],
+) -> None:
+    output = SimpleNamespace(
+        coordinates=torch.zeros((1, 2, 2, 3)),
+        atom_confidence=torch.full((1, 2, 2), 0.5),
+        sample_confidence=sample_confidence,
+    )
+    with pytest.raises(error):
+        build_candidates(
+            output,
+            atom_mask=torch.tensor([[True, True]]),
+            seeds=(10, 11),
+            steps=8,
+        )
+
+
+def test_confidence_representation_is_explicit() -> None:
+    values = torch.tensor([0.2, 0.8])
+    mask = torch.tensor([True, True])
+
+    probabilities = estimate_confidence(
+        values,
+        mask,
+        representation=ConfidenceRepresentation.PROBABILITIES,
+    )
+    logits = estimate_confidence(
+        values,
+        mask,
+        representation=ConfidenceRepresentation.LOGITS,
+    )
+
+    assert probabilities == pytest.approx(0.5)
+    assert logits == pytest.approx(float(torch.sigmoid(values).mean()))
+    assert logits != pytest.approx(probabilities)
+    with pytest.raises(ValueError, match="within"):
+        estimate_confidence(
+            torch.tensor([1.1]),
+            torch.tensor([True]),
+            representation=ConfidenceRepresentation.PROBABILITIES,
+        )
+
+
+def test_default_structure_validation_skips_pairwise_scan(monkeypatch) -> None:
+    def unexpected_cdist(*_args: object, **_kwargs: object) -> torch.Tensor:
+        raise AssertionError("pairwise collision scan was not requested")
+
+    monkeypatch.setattr(torch, "cdist", unexpected_cdist)
+    report = validate_structure(
+        torch.zeros((1, 4096, 3)),
+        atom_mask=torch.ones((1, 4096), dtype=torch.bool),
+    )
+
+    assert report.minimum_nonbonded_distance is None
+
+
+def test_collision_rejection_forces_pairwise_scan() -> None:
+    with pytest.raises(ValueError, match="collision"):
+        validate_structure(
+            torch.zeros((1, 2, 3)),
+            atom_mask=torch.ones((1, 2), dtype=torch.bool),
+            reject_collisions_below=0.1,
+        )

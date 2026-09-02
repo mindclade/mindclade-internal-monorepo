@@ -11,6 +11,7 @@ from typing import (
 )
 
 import torch
+from mindclade.models.common.configuration import ModelConfig
 from mindclade.training.api import (
     RunStatus,
     TrainerState,
@@ -76,7 +77,22 @@ class Trainer:
             total_steps=program.max_steps,
         )
         self.checkpoint_manager = checkpoint_manager
-        self.checkpoint_identity = dict(checkpoint_identity or program.to_dict())
+        model_config = getattr(self.model, "config", None)
+        if (
+            checkpoint_manager is not None
+            and checkpoint_identity is None
+            and not isinstance(model_config, ModelConfig)
+        ):
+            raise ValueError(
+                "checkpoint_identity is required for models without a Mindclade ModelConfig"
+            )
+        effective_checkpoint_identity: dict[str, Any] = {"program": program.to_dict()}
+        if isinstance(model_config, ModelConfig):
+            model_config.validate()
+            effective_checkpoint_identity["model_config"] = model_config.to_dict()
+        if checkpoint_identity is not None:
+            effective_checkpoint_identity["caller"] = dict(checkpoint_identity)
+        self.checkpoint_identity = effective_checkpoint_identity
         self.on_step = on_step
         self.state = TrainerState(run_id=run_id)
         self._history: list[StepRecord] = []
@@ -118,19 +134,23 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         aggregate: dict[str, float] = {}
         sample_ids: list[str] = []
-        divisor = float(len(batches))
+        microbatch_ids = [self._sample_ids(batch) for batch in batches]
+        sample_counts = [len(ids) if ids else 1 for ids in microbatch_ids]
+        total_samples = float(sum(sample_counts))
 
-        for raw_batch in batches:
+        for raw_batch, ids, sample_count in zip(
+            batches, microbatch_ids, sample_counts, strict=True
+        ):
+            contribution = float(sample_count) / total_samples
             batch = self.engine.prepare_batch(raw_batch)
             self.task.validate_batch(batch)
             with self.engine.precision.autocast():
                 output = self.task.forward(self.model, batch)
                 report = self.task.compute_loss(output, batch)
             require_finite_loss(report)
-            self.engine.backward(report.total / divisor)
+            self.engine.backward(report.total * contribution)
             for name, value in report.detached_metrics().items():
-                aggregate[name] = aggregate.get(name, 0.0) + value / divisor
-            ids = self._sample_ids(raw_batch)
+                aggregate[name] = aggregate.get(name, 0.0) + value * contribution
             sample_ids.extend(ids)
             self.state.data.record(ids)
             if (
@@ -194,30 +214,34 @@ class Trainer:
         return restored
 
     def run(self, data: Iterable[Any]) -> TrainingResult:
-        if self.state.status is RunStatus.CREATED:
-            seed_everything(self.program.reproducibility)
+        created = self.state.status is RunStatus.CREATED
         self.state.status = RunStatus.RUNNING
-        if isinstance(data, Sized):
-            self._data_length = len(data)
-            if self._data_length <= 0:
-                raise EmptyTrainingDataError("training data iterable is empty")
-            self.state.data.epoch = self.state.data.batches_seen // self._data_length
-            offset = self.state.data.batches_seen % self._data_length
-        else:
-            self._data_length = None
-            if self.state.data.batches_seen:
-                raise ValueError("resuming requires a sized, reiterable training data source")
-            offset = 0
-        set_epoch = getattr(data, "set_epoch", None)
-        if callable(set_epoch):
-            set_epoch(self.state.data.epoch)
-        iterator = iter(data)
-        for _ in range(offset):
-            try:
-                next(iterator)
-            except StopIteration as exc:
-                raise ValueError("saved data progress exceeds the current epoch length") from exc
         try:
+            if created:
+                seed_everything(self.program.reproducibility)
+            self.model.train()
+            if isinstance(data, Sized):
+                self._data_length = len(data)
+                if self._data_length <= 0:
+                    raise EmptyTrainingDataError("training data iterable is empty")
+                self.state.data.epoch = self.state.data.batches_seen // self._data_length
+                offset = self.state.data.batches_seen % self._data_length
+            else:
+                self._data_length = None
+                if self.state.data.batches_seen:
+                    raise ValueError("resuming requires a sized, reiterable training data source")
+                offset = 0
+            set_epoch = getattr(data, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(self.state.data.epoch)
+            iterator = iter(data)
+            for _ in range(offset):
+                try:
+                    next(iterator)
+                except StopIteration as exc:
+                    raise ValueError(
+                        "saved data progress exceeds the current epoch length"
+                    ) from exc
             while self.state.global_step < self.program.max_steps:
                 microbatches = []
                 for _ in range(self.program.gradient_accumulation_steps):

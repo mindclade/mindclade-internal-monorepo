@@ -108,7 +108,9 @@ impl FilesystemStore {
         }
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join("objects"))?;
-        fs::create_dir_all(root.join("uploads"))?;
+        let uploads = root.join("uploads");
+        fs::create_dir_all(&uploads)?;
+        remove_orphaned_upload_parts(&uploads)?;
         Ok(Self {
             root,
             sessions: Mutex::new(HashMap::new()),
@@ -297,7 +299,19 @@ impl FilesystemStore {
             fs::create_dir_all(parent)?;
         }
         if destination.exists() {
-            fs::remove_file(&state.path)?;
+            let replace = match verified_file(&destination, &actual, self.max_object_bytes) {
+                Ok(_) => false,
+                Err(ArtifactError::Integrity | ArtifactError::SizeExceeded) => true,
+                Err(ArtifactError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    true
+                }
+                Err(error) => return Err(error),
+            };
+            if replace {
+                fs::rename(&state.path, &destination)?;
+            } else {
+                fs::remove_file(&state.path)?;
+            }
         } else {
             fs::rename(&state.path, &destination)?;
         }
@@ -327,29 +341,7 @@ impl FilesystemStore {
     ///
     /// Returns [`ArtifactError`] when verification, sizing, or I/O fails.
     pub fn open_verified(&self, digest: &Digest) -> Result<(File, u64), ArtifactError> {
-        let mut file = File::open(self.object_path(digest))?;
-        let size = file.metadata()?.len();
-        if size == 0 || size > self.max_object_bytes {
-            return Err(ArtifactError::SizeExceeded);
-        }
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&buffer[..count]);
-        }
-        let actual = format!(
-            "sha256:{}",
-            hex::encode(<[u8; 32]>::from(hasher.finalize()))
-        );
-        if actual != digest.to_string() {
-            return Err(ArtifactError::Integrity);
-        }
-        file.seek(SeekFrom::Start(0))?;
-        Ok((file, size))
+        verified_file(&self.object_path(digest), digest, self.max_object_bytes)
     }
 
     /// Re-hash an immutable object and return its exact committed size.
@@ -370,6 +362,53 @@ impl FilesystemStore {
         let body = digest.hex();
         self.root.join("objects").join(&body[..2]).join(body)
     }
+}
+
+fn remove_orphaned_upload_parts(directory: &Path) -> Result<(), ArtifactError> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "part")
+        {
+            let file_type = entry.file_type()?;
+            if file_type.is_file() || file_type.is_symlink() {
+                fs::remove_file(path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verified_file(
+    path: &Path,
+    digest: &Digest,
+    maximum_bytes: u64,
+) -> Result<(File, u64), ArtifactError> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    if size == 0 || size > maximum_bytes {
+        return Err(ArtifactError::SizeExceeded);
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual = format!(
+        "sha256:{}",
+        hex::encode(<[u8; 32]>::from(hasher.finalize()))
+    );
+    if actual != digest.to_string() {
+        return Err(ArtifactError::Integrity);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok((file, size))
 }
 
 fn unix_now() -> u64 {

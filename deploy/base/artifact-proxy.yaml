@@ -24,6 +24,7 @@ spec:
           image: us-docker.pkg.dev/mindclade-development/runtime/artifact-proxy@sha256:3333333333333333333333333333333333333333333333333333333333333333
           env:
             - {name: MINDCLADE_ARTIFACT_PROXY_ADDRESS, value: "0.0.0.0:8082"}
+            - {name: MINDCLADE_ARTIFACT_BODY_READ_TIMEOUT_SECONDS, value: "15"}
             - {name: MINDCLADE_ARTIFACT_ROOT, value: "/var/lib/mindclade-artifacts"}
             - {name: MINDCLADE_ARTIFACT_PUBLIC_KEYS_FILE, value: "/var/run/mindclade-signing/public-keys.json"}
           ports: [{name: http, containerPort: 8082}]

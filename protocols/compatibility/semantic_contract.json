@@ -71,6 +71,7 @@
     "states": ["queued", "admitted", "running", "succeeded", "failed", "cancelled"]
   },
   "submit_inference": {
+    "idempotency_key_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
     "numeric_fields": {
       "diffusion_steps": {
         "maximum": 128,

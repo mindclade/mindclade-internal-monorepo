@@ -13,6 +13,7 @@ from typing import Any
 import torch
 from mindclade.training.api.checkpoint import (
     CheckpointCompatibilityError,
+    CheckpointError,
     CheckpointRef,
 )
 from mindclade.training.api.reproducibility import (
@@ -50,6 +51,57 @@ def _distributed_rank_world() -> tuple[int, int]:
 def _barrier() -> None:
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.barrier()
+
+
+def _collective_device() -> torch.device:
+    backend = str(torch.distributed.get_backend()).lower()
+    if "nccl" in backend:
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+def _broadcast_text(value: str, *, src: int) -> str:
+    """Broadcast UTF-8 without object collectives or a NumPy dependency."""
+
+    rank = torch.distributed.get_rank()
+    device = _collective_device()
+    encoded = value.encode("utf-8") if rank == src else b""
+    length = torch.tensor([len(encoded)], dtype=torch.int64, device=device)
+    torch.distributed.broadcast(length, src=src)
+    size = int(length.item())
+    if size == 0:
+        return ""
+    if rank == src:
+        payload = torch.tensor(list(encoded), dtype=torch.uint8, device=device)
+    else:
+        payload = torch.empty(size, dtype=torch.uint8, device=device)
+    torch.distributed.broadcast(payload, src=src)
+    return bytes(payload.cpu().tolist()).decode("utf-8")
+
+
+def _all_gather_text(value: str, world_size: int) -> list[str]:
+    """Gather rank-local UTF-8 without pickle-backed object collectives."""
+
+    device = _collective_device()
+    encoded = value.encode("utf-8")
+    local_length = torch.tensor([len(encoded)], dtype=torch.int64, device=device)
+    gathered_lengths = [torch.empty_like(local_length) for _ in range(world_size)]
+    torch.distributed.all_gather(gathered_lengths, local_length)
+    lengths = [int(length.item()) for length in gathered_lengths]
+    maximum = max(lengths)
+    if maximum == 0:
+        return [""] * world_size
+    local_payload = torch.zeros(maximum, dtype=torch.uint8, device=device)
+    if encoded:
+        local_payload[: len(encoded)] = torch.tensor(
+            list(encoded), dtype=torch.uint8, device=device
+        )
+    gathered_payloads = [torch.empty_like(local_payload) for _ in range(world_size)]
+    torch.distributed.all_gather(gathered_payloads, local_payload)
+    return [
+        bytes(payload[:length].cpu().tolist()).decode("utf-8")
+        for payload, length in zip(gathered_payloads, lengths, strict=True)
+    ]
 
 
 def _json_safe(value: Any) -> Any:
@@ -114,79 +166,113 @@ class DCPCheckpointManager:
     ) -> CheckpointRef:
         rank, world_size = _distributed_rank_world()
         writer: AtomicCheckpointWriter | None = None
-        staging: Path | None = None
-        if rank == 0:
-            writer = AtomicCheckpointWriter(self.root, checkpoint_id)
-            writer.__enter__()
-            staging = writer.staging
-        if world_size > 1:
-            values = [str(staging) if staging is not None else ""]
-            torch.distributed.broadcast_object_list(values, src=0)
-            staging = Path(values[0])
-        if staging is None:
-            raise RuntimeError("rank zero did not publish a checkpoint staging path")
-
         try:
-            save_model_optimizer(staging / DCP_DIRECTORY, model, optimizer)
-            rank_state_dir = staging / RANK_STATE_DIRECTORY
-            rank_state_dir.mkdir(parents=True, exist_ok=True)
-            state_payload = {
-                "rng": capture_rng_state().to_dict(),
-                "scaler": None if scaler is None else _json_safe(scaler.state_dict()),
-                "scheduler": None if scheduler is None else _json_safe(scheduler.state_dict()),
-                "trainer": trainer_state.to_dict(),
+            setup_result = {
+                "staging": "",
+                "error": "",
             }
-            state_path = _rank_state_path(staging, rank)
-            with state_path.open("x", encoding="utf-8") as handle:
-                json.dump(
-                    state_payload, handle, allow_nan=False, sort_keys=True, separators=(",", ":")
-                )
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            _barrier()
-
-            manifest: CheckpointManifest | None = None
-            target: Path | None = None
             if rank == 0:
-                manifest = CheckpointManifest(
-                    checkpoint_id=checkpoint_id,
-                    created_at=datetime.now(UTC).isoformat(),
-                    global_step=trainer_state.global_step,
-                    world_size=world_size,
-                    torch_version=torch.__version__,
-                    model_schema_sha256=_model_schema_digest(model),
-                    program_sha256=digest_mapping(dict(program)),
-                    files=inventory_files(staging),
-                )
-                if writer is None:
-                    raise RuntimeError("rank zero checkpoint writer is unavailable")
-                target = writer.commit(manifest)
+                try:
+                    writer = AtomicCheckpointWriter(self.root, checkpoint_id)
+                    writer.__enter__()
+                    if writer.staging is None:
+                        raise RuntimeError("checkpoint writer did not create a staging path")
+                    setup_result["staging"] = str(writer.staging)
+                except BaseException as exc:
+                    setup_result["error"] = (
+                        f"checkpoint setup failed on rank 0: {type(exc).__name__}: {exc}"
+                    )
             if world_size > 1:
-                values = [
-                    str(target) if target is not None else "",
-                    manifest.sha256 if manifest is not None else "",
-                ]
-                torch.distributed.broadcast_object_list(values, src=0)
-                target = Path(values[0])
-                manifest_sha = values[1]
+                setup_result = {
+                    name: _broadcast_text(value, src=0) for name, value in setup_result.items()
+                }
+            if setup_result["error"]:
+                raise CheckpointError(setup_result["error"])
+            if not setup_result["staging"]:
+                raise CheckpointError("rank zero did not publish a checkpoint staging path")
+            staging = Path(setup_result["staging"])
+
+            local_error = ""
+            try:
+                save_model_optimizer(staging / DCP_DIRECTORY, model, optimizer)
+                rank_state_dir = staging / RANK_STATE_DIRECTORY
+                rank_state_dir.mkdir(parents=True, exist_ok=True)
+                state_payload = {
+                    "rng": capture_rng_state().to_dict(),
+                    "scaler": None if scaler is None else _json_safe(scaler.state_dict()),
+                    "scheduler": (
+                        None if scheduler is None else _json_safe(scheduler.state_dict())
+                    ),
+                    "trainer": trainer_state.to_dict(),
+                }
+                state_path = _rank_state_path(staging, rank)
+                with state_path.open("x", encoding="utf-8") as handle:
+                    json.dump(
+                        state_payload,
+                        handle,
+                        allow_nan=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except BaseException as exc:
+                local_error = (
+                    f"checkpoint payload failed on rank {rank}: {type(exc).__name__}: {exc}"
+                )
+
+            if world_size > 1:
+                rank_errors = _all_gather_text(local_error, world_size)
             else:
-                if target is None or manifest is None:
-                    raise RuntimeError("single-process checkpoint commit did not complete")
-                manifest_sha = manifest.sha256
+                rank_errors = [local_error]
+            failures = [error for error in rank_errors if error]
+            if failures:
+                raise CheckpointError("; ".join(failures))
+
+            commit_result = {
+                "target": "",
+                "manifest_sha256": "",
+                "error": "",
+            }
+            if rank == 0:
+                try:
+                    manifest = CheckpointManifest(
+                        checkpoint_id=checkpoint_id,
+                        created_at=datetime.now(UTC).isoformat(),
+                        global_step=trainer_state.global_step,
+                        world_size=world_size,
+                        torch_version=torch.__version__,
+                        model_schema_sha256=_model_schema_digest(model),
+                        program_sha256=digest_mapping(dict(program)),
+                        files=inventory_files(staging),
+                    )
+                    if writer is None:
+                        raise RuntimeError("rank zero checkpoint writer is unavailable")
+                    commit_result["target"] = str(writer.commit(manifest))
+                    commit_result["manifest_sha256"] = manifest.sha256
+                except BaseException as exc:
+                    commit_result["error"] = (
+                        f"checkpoint commit failed on rank 0: {type(exc).__name__}: {exc}"
+                    )
+            if world_size > 1:
+                commit_result = {
+                    name: _broadcast_text(value, src=0) for name, value in commit_result.items()
+                }
+            if commit_result["error"]:
+                raise CheckpointError(commit_result["error"])
+            if not commit_result["target"] or not commit_result["manifest_sha256"]:
+                raise CheckpointError("rank zero did not publish a committed checkpoint")
+
             _barrier()
             return CheckpointRef(
                 checkpoint_id=checkpoint_id,
-                path=target,
+                path=Path(commit_result["target"]),
                 global_step=trainer_state.global_step,
-                manifest_sha256=manifest_sha,
+                manifest_sha256=commit_result["manifest_sha256"],
             )
-        except BaseException:
-            if writer is not None:
-                writer.__exit__(None, None, None)
-            raise
         finally:
-            if writer is not None and writer.staging is not None:
+            if writer is not None:
                 writer.__exit__(None, None, None)
 
     def restore(

@@ -10,8 +10,10 @@ from mindclade.training import (
     ParallelismConfig,
     ParallelismMode,
     PrecisionConfig,
+    PrecisionMode,
     TrainingProgram,
 )
+from mindclade.training.precision import resolve_precision
 
 
 def test_loss_composition_preserves_autograd_and_reports_fp32() -> None:
@@ -78,3 +80,41 @@ def test_program_rejects_unsafe_or_unsupported_defaults() -> None:
         "mode": "fp32",
         "reduction_dtype": "fp32",
     }
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("max_steps", "gradient_accumulation_steps", "checkpoint_every_steps"),
+)
+@pytest.mark.parametrize("value", (True, 1.5))
+def test_program_requires_exact_integer_step_counts(field: str, value: object) -> None:
+    arguments = {"name": "invalid-steps", "max_steps": 1, field: value}
+    with pytest.raises(ValueError, match=f"{field} must be a positive integer"):
+        TrainingProgram(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "learning_rate",
+        "beta1",
+        "beta2",
+        "epsilon",
+        "weight_decay",
+        "max_gradient_norm",
+    ),
+)
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_optimizer_rejects_non_finite_numeric_controls(field: str, value: float) -> None:
+    arguments = {field: value}
+    with pytest.raises(ValueError, match=f"{field} must be finite"):
+        OptimizerConfig(**arguments)
+
+
+def test_fp16_amp_keeps_fp32_master_parameters() -> None:
+    resolved = resolve_precision(
+        PrecisionConfig(mode=PrecisionMode.FP16),
+        torch.device("cuda"),
+    )
+    assert resolved.parameter_dtype is torch.float32
+    assert resolved.compute_dtype is torch.float16

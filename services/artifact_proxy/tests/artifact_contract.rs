@@ -116,7 +116,7 @@ fn resumable_upload_is_digest_verified() {
         project_id: "project-a".to_owned(),
     };
     let session = store
-        .begin(scope, digest.clone(), bytes.len() as u64)
+        .begin(scope.clone(), digest.clone(), bytes.len() as u64)
         .unwrap();
     let first = &bytes[..8];
     assert_eq!(
@@ -139,6 +139,36 @@ fn resumable_upload_is_digest_verified() {
     )
     .unwrap();
     assert!(store.verified_size(&digest).is_err());
+
+    let repair = store
+        .begin(scope.clone(), digest.clone(), bytes.len() as u64)
+        .unwrap();
+    store.append(&repair.upload_id, 0, bytes).unwrap();
+    assert_eq!(store.commit(&repair.upload_id).unwrap(), digest);
+    assert_eq!(store.get(&digest).unwrap(), bytes);
+
+    let duplicate = store
+        .begin(scope, digest.clone(), bytes.len() as u64)
+        .unwrap();
+    store.append(&duplicate.upload_id, 0, bytes).unwrap();
+    assert_eq!(store.commit(&duplicate.upload_id).unwrap(), digest);
+    assert_eq!(store.get(&digest).unwrap(), bytes);
+}
+
+#[test]
+fn store_initialization_removes_only_orphaned_upload_parts() {
+    let temporary = tempfile::tempdir().unwrap();
+    let uploads = temporary.path().join("uploads");
+    fs::create_dir_all(&uploads).unwrap();
+    fs::write(uploads.join("upload-orphan.part"), b"partial bytes").unwrap();
+    fs::write(uploads.join("operator-sentinel.keep"), b"keep").unwrap();
+
+    let _store = FilesystemStore::new(temporary.path()).unwrap();
+    assert!(!uploads.join("upload-orphan.part").exists());
+    assert_eq!(
+        fs::read(uploads.join("operator-sentinel.keep")).unwrap(),
+        b"keep"
+    );
 }
 
 #[test]
