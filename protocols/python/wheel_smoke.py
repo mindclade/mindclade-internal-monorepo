@@ -101,9 +101,11 @@ from pathlib import Path
 import site
 
 import mindclade.inference
+import mindclade.inference.artifacts
 import mindclade.models
 import mindclade.training
 from mindclade.inference import InferenceRequest
+from mindclade.inference.artifacts import ArtifactCommitter, ResultManifest, StreamWriter
 from mindclade.inference.v1alpha1 import inference_pb2
 from mindclade.job.v1alpha1 import job_pb2
 
@@ -119,8 +121,17 @@ decoded = job_pb2.Job.FromString(message.SerializeToString(deterministic=True))
 assert decoded == message
 assert inference_pb2.InferenceOptions(seed=7, diffusion_steps=16).diffusion_steps == 16
 assert InferenceRequest.__module__.startswith("mindclade.inference.contracts.")
+assert ArtifactCommitter.__module__.startswith("mindclade.inference.artifacts.")
+assert ResultManifest.__module__.startswith("mindclade.inference.artifacts.")
+assert StreamWriter.__module__.startswith("mindclade.inference.artifacts.")
 site_root = Path(site.getsitepackages()[0]).resolve()
-for module in (mindclade.inference, mindclade.models, mindclade.training, job_pb2):
+for module in (
+    mindclade.inference,
+    mindclade.inference.artifacts,
+    mindclade.models,
+    mindclade.training,
+    job_pb2,
+):
     assert site_root in Path(module.__file__).resolve().parents
 """
         subprocess.run(

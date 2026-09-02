@@ -15,14 +15,24 @@ import (
 	"time"
 )
 
-const internalAssertionWindow = 60 * time.Second
+const (
+	internalAssertionWindow = 60 * time.Second
+	maximumNoncesPerTenant  = 1_000
+	maximumNonceTenants     = 1_024
+)
+
+type tenantNonceCache struct {
+	mu     sync.Mutex
+	nonces map[string]time.Time
+	users  int
+}
 
 // InternalIdentityVerifier authenticates gateway-derived identity and rejects replay.
 type InternalIdentityVerifier struct {
 	secret []byte
 	now    func() time.Time
 	mu     sync.Mutex
-	nonces map[string]time.Time
+	nonces map[string]*tenantNonceCache
 }
 
 func NewInternalIdentityVerifier(secret []byte) (*InternalIdentityVerifier, error) {
@@ -30,7 +40,8 @@ func NewInternalIdentityVerifier(secret []byte) (*InternalIdentityVerifier, erro
 		return nil, errors.New("internal identity secret must contain at least 32 bytes")
 	}
 	return &InternalIdentityVerifier{
-		secret: append([]byte(nil), secret...), now: time.Now, nonces: make(map[string]time.Time),
+		secret: append([]byte(nil), secret...), now: time.Now,
+		nonces: make(map[string]*tenantNonceCache),
 	}, nil
 }
 
@@ -90,18 +101,63 @@ func (v *InternalIdentityVerifier) Authenticate(request *http.Request) (Principa
 	if principal.Authorize(Scope{TenantID: principal.TenantID, ProjectID: project}) != nil {
 		return Principal{}, ErrForbidden
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	for value, seenAt := range v.nonces {
-		if seenAt.Before(now.Add(-internalAssertionWindow)) {
-			delete(v.nonces, value)
-		}
-	}
-	if _, replayed := v.nonces[nonce]; replayed || len(v.nonces) >= 10_000 {
+	tenantNonces, acquired := v.acquireTenantNonceCache(principal.TenantID, now)
+	if !acquired {
 		return Principal{}, ErrForbidden
 	}
-	v.nonces[nonce] = now
+	defer v.releaseTenantNonceCache(tenantNonces)
+	tenantNonces.mu.Lock()
+	defer tenantNonces.mu.Unlock()
+	for value, seenAt := range tenantNonces.nonces {
+		if seenAt.Before(now.Add(-internalAssertionWindow)) {
+			delete(tenantNonces.nonces, value)
+		}
+	}
+	if _, replayed := tenantNonces.nonces[nonce]; replayed || len(tenantNonces.nonces) >= maximumNoncesPerTenant {
+		return Principal{}, ErrForbidden
+	}
+	tenantNonces.nonces[nonce] = now
 	return principal, nil
+}
+
+func (v *InternalIdentityVerifier) acquireTenantNonceCache(tenant string, now time.Time) (*tenantNonceCache, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	cache := v.nonces[tenant]
+	if cache == nil {
+		if len(v.nonces) >= maximumNonceTenants {
+			cutoff := now.Add(-internalAssertionWindow)
+			for candidate, existing := range v.nonces {
+				if existing.users != 0 {
+					continue
+				}
+				existing.mu.Lock()
+				for value, seenAt := range existing.nonces {
+					if seenAt.Before(cutoff) {
+						delete(existing.nonces, value)
+					}
+				}
+				empty := len(existing.nonces) == 0
+				existing.mu.Unlock()
+				if empty {
+					delete(v.nonces, candidate)
+				}
+			}
+		}
+		if len(v.nonces) >= maximumNonceTenants {
+			return nil, false
+		}
+		cache = &tenantNonceCache{nonces: make(map[string]time.Time)}
+		v.nonces[tenant] = cache
+	}
+	cache.users++
+	return cache, true
+}
+
+func (v *InternalIdentityVerifier) releaseTenantNonceCache(cache *tenantNonceCache) {
+	v.mu.Lock()
+	cache.users--
+	v.mu.Unlock()
 }
 
 func authenticatedBodyDigest(request *http.Request) (string, error) {

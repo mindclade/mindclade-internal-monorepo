@@ -1,41 +1,159 @@
-//! Minimal synchronous HTTP adapter for the artifact capability and store contracts.
+//! Bounded asynchronous HTTP adapter for artifact capabilities and storage.
 
-use crate::{Capability, CapabilityOperation, CapabilityVerifier, Digest, FilesystemStore, Scope};
+use crate::{
+    ArtifactError, Capability, CapabilityOperation, CapabilityVerifier, Digest, FilesystemStore,
+    Scope,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bytes::Bytes;
+use futures_util::TryStreamExt as _;
+use http_body_util::{BodyExt as _, Full, StreamBody, combinators::BoxBody};
+use hyper::{
+    HeaderMap, Method, Request, Response, StatusCode,
+    body::{Body, Frame, Incoming},
+    header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderValue},
+    server::conn::http1,
+    service::service_fn,
+};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::{Deserialize, Serialize};
-use std::{io::Read, str::FromStr, sync::Arc, thread};
-use tiny_http::{Header, Method, Request, Response, ResponseBox, Server, StatusCode};
+use std::{
+    convert::Infallible,
+    error::Error,
+    io,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    task::{Context as TaskContext, Poll},
+    time::Duration,
+};
+use tokio::{
+    net::TcpListener,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task, time,
+};
+use tokio_util::io::ReaderStream;
 
-const HTTP_WORKERS: usize = 16;
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONCURRENT_CONNECTIONS: usize = 32;
+const MAX_CONCURRENT_REQUESTS: usize = 16;
+const MAX_CONCURRENT_STORAGE_OPERATIONS: usize = 8;
 
-/// Serve the artifact API until the process is terminated.
+type BoxError = Box<dyn Error + Send + Sync>;
+type HttpBody = BoxBody<Bytes, BoxError>;
+type HttpError = (StatusCode, String);
+
+#[derive(Clone)]
+struct WorkLimits {
+    connections: Arc<Semaphore>,
+    requests: Arc<Semaphore>,
+    storage: Arc<Semaphore>,
+}
+
+struct PermitBody<B> {
+    inner: B,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<B> Body for PermitBody<B>
+where
+    B: Body + Unpin,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(context)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl WorkLimits {
+    fn new() -> Self {
+        Self {
+            connections: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
+            requests: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+            storage: Arc::new(Semaphore::new(MAX_CONCURRENT_STORAGE_OPERATIONS)),
+        }
+    }
+}
+
+/// Serve the artifact API until the listener fails or the process is terminated.
+///
+/// Header parsing and every upload-body read are time bounded. Filesystem hashing
+/// and synchronization run on Tokio's blocking pool rather than occupying HTTP
+/// executor threads.
 ///
 /// # Errors
 ///
-/// Returns an error if the listener cannot start or an HTTP worker panics.
-pub fn serve(
+/// Returns an error when the body timeout is invalid, the listener cannot start,
+/// or accepting a connection fails.
+pub async fn serve(
     address: &str,
     store: &Arc<FilesystemStore>,
     verifier: &Arc<CapabilityVerifier>,
+    body_read_timeout: Duration,
 ) -> Result<(), String> {
-    let server = Arc::new(Server::http(address).map_err(|error| error.to_string())?);
-    let mut workers = Vec::with_capacity(HTTP_WORKERS);
-    for _ in 0..HTTP_WORKERS {
-        let server = Arc::clone(&server);
+    serve_with_limits(
+        address,
+        store,
+        verifier,
+        body_read_timeout,
+        WorkLimits::new(),
+    )
+    .await
+}
+
+async fn serve_with_limits(
+    address: &str,
+    store: &Arc<FilesystemStore>,
+    verifier: &Arc<CapabilityVerifier>,
+    body_read_timeout: Duration,
+    limits: WorkLimits,
+) -> Result<(), String> {
+    if body_read_timeout.is_zero() {
+        return Err("artifact body-read timeout must be positive".to_owned());
+    }
+    let listener = TcpListener::bind(address)
+        .await
+        .map_err(|error| error.to_string())?;
+    loop {
+        let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
+        let Ok(connection_permit) = Arc::clone(&limits.connections).try_acquire_owned() else {
+            continue;
+        };
         let store = Arc::clone(store);
         let verifier = Arc::clone(verifier);
-        workers.push(thread::spawn(move || {
-            while let Ok(request) = server.recv() {
-                handle(request, &store, &verifier);
-            }
-        }));
+        let limits = limits.clone();
+        task::spawn(async move {
+            let _connection_permit = connection_permit;
+            let service = service_fn(move |request| {
+                let store = Arc::clone(&store);
+                let verifier = Arc::clone(&verifier);
+                let limits = limits.clone();
+                async move {
+                    Ok::<_, Infallible>(
+                        handle(request, &store, &verifier, &limits, body_read_timeout).await,
+                    )
+                }
+            });
+            let _ = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT)
+                .serve_connection(TokioIo::new(stream), service)
+                .await;
+        });
     }
-    for worker in workers {
-        worker
-            .join()
-            .map_err(|_| "artifact HTTP worker panicked".to_owned())?;
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -53,59 +171,90 @@ struct SessionResponse<'a> {
     committed_bytes: u64,
 }
 
-fn handle(mut request: Request, store: &FilesystemStore, verifier: &CapabilityVerifier) {
-    if request.method() == &Method::Get && request.url() == "/healthz" {
-        let _ = request.respond(Response::empty(StatusCode(204)));
-        return;
+async fn handle(
+    request: Request<Incoming>,
+    store: &Arc<FilesystemStore>,
+    verifier: &Arc<CapabilityVerifier>,
+    limits: &WorkLimits,
+    body_read_timeout: Duration,
+) -> Response<HttpBody> {
+    if request.method() == Method::GET && request.uri().path() == "/healthz" {
+        return empty_response(StatusCode::NO_CONTENT);
     }
-    let path = request
-        .url()
-        .split('?')
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-    let result = match (request.method(), parts.as_slice()) {
-        (&Method::Post, ["v1alpha1", "uploads"]) => begin(&mut request, store, verifier),
-        (&Method::Put, ["v1alpha1", "uploads", upload_id]) => {
-            append(&mut request, store, verifier, upload_id)
-        }
-        (&Method::Post, ["v1alpha1", "uploads", upload_id, "commit"]) => {
-            commit(&request, store, verifier, upload_id)
-        }
-        (&Method::Get, ["v1alpha1", "artifacts", digest]) => {
-            download(&request, store, verifier, digest)
-        }
-        (&Method::Head, ["v1alpha1", "artifacts", digest]) => {
-            metadata(&request, store, verifier, digest)
-        }
-        _ => Err((404, "route not found".to_owned())),
+    let Ok(request_permit) = Arc::clone(&limits.requests).try_acquire_owned() else {
+        return json_response(
+            serde_json::json!({"error": "artifact service is at request capacity"}).to_string(),
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
     };
-    match result {
-        Ok(response) => {
-            let _ = request.respond(response);
+    let path = request.uri().path().to_owned();
+    let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+    let result = match (request.method().clone(), parts.as_slice()) {
+        (Method::POST, ["v1alpha1", "uploads"]) => {
+            begin(request, store, verifier, limits, body_read_timeout).await
         }
+        (Method::PUT, ["v1alpha1", "uploads", upload_id]) => {
+            append(
+                request,
+                store,
+                verifier,
+                limits,
+                upload_id,
+                body_read_timeout,
+            )
+            .await
+        }
+        (Method::POST, ["v1alpha1", "uploads", upload_id, "commit"]) => {
+            commit(&request, store, verifier, limits, upload_id).await
+        }
+        (Method::GET, ["v1alpha1", "artifacts", digest]) => {
+            download(&request, store, verifier, limits, digest).await
+        }
+        (Method::HEAD, ["v1alpha1", "artifacts", digest]) => {
+            metadata(&request, store, verifier, limits, digest).await
+        }
+        _ => Err((StatusCode::NOT_FOUND, "route not found".to_owned())),
+    };
+    let response = match result {
+        Ok(response) => response,
         Err((status, message)) => {
             let body = serde_json::to_string(&serde_json::json!({"error": message}))
                 .unwrap_or_else(|_| "{}".to_owned());
-            let _ = request.respond(json_response(body, status));
+            json_response(body, status)
         }
-    }
+    };
+    retain_request_capacity(response, request_permit)
 }
 
-fn begin(
-    request: &mut Request,
-    store: &FilesystemStore,
+fn retain_request_capacity(
+    response: Response<HttpBody>,
+    request_permit: OwnedSemaphorePermit,
+) -> Response<HttpBody> {
+    response.map(|body| {
+        PermitBody {
+            inner: body,
+            _permit: request_permit,
+        }
+        .boxed()
+    })
+}
+
+async fn begin(
+    request: Request<Incoming>,
+    store: &Arc<FilesystemStore>,
     verifier: &CapabilityVerifier,
-) -> Result<ResponseBox, (u16, String)> {
-    let body = read_limited(request, 64 * 1024)?;
-    let body: BeginRequest =
-        serde_json::from_slice(&body).map_err(|_| (400, "invalid begin request".to_owned()))?;
+    limits: &WorkLimits,
+    body_read_timeout: Duration,
+) -> Result<Response<HttpBody>, HttpError> {
+    let headers = request.headers().clone();
+    let body = read_limited(request.into_body(), 64 * 1024, body_read_timeout).await?;
+    let body: BeginRequest = serde_json::from_slice(&body)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid begin request".to_owned()))?;
     let scope = Scope {
         tenant_id: body.tenant_id,
         project_id: body.project_id,
     };
-    let capability = capability_header(request)?;
+    let capability = capability_header(&headers)?;
     verifier
         .verify_upload(
             &capability,
@@ -114,35 +263,46 @@ fn begin(
             body.size_bytes,
             &body.session_id,
         )
-        .map_err(|error| (403, error.to_string()))?;
-    let session = store
-        .begin_authorized(
+        .map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))?;
+    let store = Arc::clone(store);
+    let nonce = capability.nonce;
+    let session = store_call(limits, move || {
+        store.begin_authorized(
             scope,
             body.digest,
             body.size_bytes,
             &body.session_id,
-            &capability.nonce,
+            &nonce,
             capability.expires_unix,
         )
-        .map_err(|error| store_error(&error))?;
+    })
+    .await?;
     let json = serde_json::to_string(&SessionResponse {
         upload_id: &session.upload_id,
         committed_bytes: 0,
     })
-    .map_err(|_| (500, "serialization failed".to_owned()))?;
-    Ok(json_response(json, 201))
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "serialization failed".to_owned(),
+        )
+    })?;
+    Ok(json_response(json, StatusCode::CREATED))
 }
 
-fn append(
-    request: &mut Request,
-    store: &FilesystemStore,
+async fn append(
+    request: Request<Incoming>,
+    store: &Arc<FilesystemStore>,
     verifier: &CapabilityVerifier,
+    limits: &WorkLimits,
     upload_id: &str,
-) -> Result<ResponseBox, (u16, String)> {
-    let session = store
-        .session(upload_id)
-        .map_err(|error| store_error(&error))?;
-    let capability = capability_header(request)?;
+    body_read_timeout: Duration,
+) -> Result<Response<HttpBody>, HttpError> {
+    let upload_id = upload_id.to_owned();
+    let session_store = Arc::clone(store);
+    let session_id = upload_id.clone();
+    let session = store_call(limits, move || session_store.session(&session_id)).await?;
+    let capability = capability_header(request.headers())?;
     verifier
         .verify_upload(
             &capability,
@@ -151,40 +311,54 @@ fn append(
             session.size_bytes,
             &session.upload_id,
         )
-        .map_err(|error| (403, error.to_string()))?;
+        .map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))?;
     if capability.nonce != session.authorization_nonce {
         return Err((
-            403,
+            StatusCode::FORBIDDEN,
             "capability does not authorize this upload session".to_owned(),
         ));
     }
     let offset = request
-        .url()
-        .split_once("offset=")
-        .and_then(|(_, value)| value.parse::<u64>().ok())
-        .ok_or((400, "offset is required".to_owned()))?;
-    let bytes = read_limited(request, 8 * 1024 * 1024)?;
-    let updated = store
-        .append(upload_id, offset, &bytes)
-        .map_err(|error| store_error(&error))?;
+        .uri()
+        .query()
+        .and_then(|query| {
+            query
+                .split('&')
+                .find_map(|field| field.strip_prefix("offset="))
+        })
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or((StatusCode::BAD_REQUEST, "offset is required".to_owned()))?;
+    let bytes = read_limited(request.into_body(), 8 * 1024 * 1024, body_read_timeout).await?;
+    let append_store = Arc::clone(store);
+    let updated = store_call(limits, move || {
+        append_store.append(&upload_id, offset, &bytes)
+    })
+    .await?;
     let json = serde_json::to_string(&SessionResponse {
         upload_id: &updated.upload_id,
         committed_bytes: updated.committed_bytes,
     })
-    .map_err(|_| (500, "serialization failed".to_owned()))?;
-    Ok(json_response(json, 200))
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "serialization failed".to_owned(),
+        )
+    })?;
+    Ok(json_response(json, StatusCode::OK))
 }
 
-fn commit(
-    request: &Request,
-    store: &FilesystemStore,
+async fn commit(
+    request: &Request<Incoming>,
+    store: &Arc<FilesystemStore>,
     verifier: &CapabilityVerifier,
+    limits: &WorkLimits,
     upload_id: &str,
-) -> Result<ResponseBox, (u16, String)> {
-    let session = store
-        .session(upload_id)
-        .map_err(|error| store_error(&error))?;
-    let capability = capability_header(request)?;
+) -> Result<Response<HttpBody>, HttpError> {
+    let upload_id = upload_id.to_owned();
+    let session_store = Arc::clone(store);
+    let session_id = upload_id.clone();
+    let session = store_call(limits, move || session_store.session(&session_id)).await?;
+    let capability = capability_header(request.headers())?;
     verifier
         .verify_upload(
             &capability,
@@ -193,31 +367,31 @@ fn commit(
             session.size_bytes,
             &session.upload_id,
         )
-        .map_err(|error| (403, error.to_string()))?;
+        .map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))?;
     if capability.nonce != session.authorization_nonce {
         return Err((
-            403,
+            StatusCode::FORBIDDEN,
             "capability does not authorize this upload session".to_owned(),
         ));
     }
-    let digest = store
-        .commit(upload_id)
-        .map_err(|error| store_error(&error))?;
+    let commit_store = Arc::clone(store);
+    let digest = store_call(limits, move || commit_store.commit(&upload_id)).await?;
     Ok(json_response(
         serde_json::json!({"digest": digest.to_string()}).to_string(),
-        200,
+        StatusCode::OK,
     ))
 }
 
-fn download(
-    request: &Request,
-    store: &FilesystemStore,
+async fn download(
+    request: &Request<Incoming>,
+    store: &Arc<FilesystemStore>,
     verifier: &CapabilityVerifier,
+    limits: &WorkLimits,
     digest: &str,
-) -> Result<ResponseBox, (u16, String)> {
+) -> Result<Response<HttpBody>, HttpError> {
     let decoded = decode_path_segment(digest)?;
-    let digest = Digest::from_str(&decoded).map_err(|error| (400, error))?;
-    let capability = capability_header(request)?;
+    let digest = Digest::from_str(&decoded).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let capability = capability_header(request.headers())?;
     verifier
         .verify(
             &capability,
@@ -225,35 +399,48 @@ fn download(
             &digest,
             CapabilityOperation::Download,
         )
-        .map_err(|error| (403, error.to_string()))?;
-    let (file, size) = store
-        .open_verified(&digest)
-        .map_err(|error| store_error(&error))?;
+        .map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))?;
+    let open_store = Arc::clone(store);
+    let requested_digest = digest.clone();
+    let (file, size) =
+        store_call(limits, move || open_store.open_verified(&requested_digest)).await?;
     if size > capability.max_size_bytes {
-        return Err((403, "artifact exceeds capability size bound".to_owned()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "artifact exceeds capability size bound".to_owned(),
+        ));
     }
-    let length = usize::try_from(size).map_err(|_| (413, "artifact is too large".to_owned()))?;
-    let mut response = Response::new(StatusCode(200), Vec::new(), file, Some(length), None).boxed();
-    response.add_header(
-        Header::from_bytes("Content-Type", "application/octet-stream")
-            .map_err(|()| (500, "header failed".to_owned()))?,
+    let stream = ReaderStream::new(tokio::fs::File::from_std(file))
+        .map_ok(Frame::data)
+        .map_err(|error| -> BoxError { Box::new(error) });
+    let body = StreamBody::new(stream).boxed();
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
     );
-    response.add_header(
-        Header::from_bytes("ETag", digest.to_string())
-            .map_err(|()| (500, "header failed".to_owned()))?,
+    response.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&size.to_string()).map_err(internal_header_error)?,
+    );
+    response.headers_mut().insert(
+        ETAG,
+        HeaderValue::from_str(&digest.to_string()).map_err(internal_header_error)?,
     );
     Ok(response)
 }
 
-fn metadata(
-    request: &Request,
-    store: &FilesystemStore,
+async fn metadata(
+    request: &Request<Incoming>,
+    store: &Arc<FilesystemStore>,
     verifier: &CapabilityVerifier,
+    limits: &WorkLimits,
     digest: &str,
-) -> Result<ResponseBox, (u16, String)> {
+) -> Result<Response<HttpBody>, HttpError> {
     let decoded = decode_path_segment(digest)?;
-    let digest = Digest::from_str(&decoded).map_err(|error| (400, error))?;
-    let capability = capability_header(request)?;
+    let digest = Digest::from_str(&decoded).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let capability = capability_header(request.headers())?;
     verifier
         .verify(
             &capability,
@@ -261,29 +448,106 @@ fn metadata(
             &digest,
             CapabilityOperation::Download,
         )
-        .map_err(|error| (403, error.to_string()))?;
-    let size = store
-        .verified_size(&digest)
-        .map_err(|error| store_error(&error))?;
+        .map_err(|error| (StatusCode::FORBIDDEN, error.to_string()))?;
+    let size_store = Arc::clone(store);
+    let requested_digest = digest.clone();
+    let size = store_call(limits, move || size_store.verified_size(&requested_digest)).await?;
     if size != capability.max_size_bytes {
         return Err((
-            403,
+            StatusCode::FORBIDDEN,
             "artifact size differs from capability bound".to_owned(),
         ));
     }
-    let mut response = Response::empty(StatusCode(200)).boxed();
-    response.add_header(
-        Header::from_bytes("X-Mindclade-Artifact-Digest", digest.to_string())
-            .map_err(|()| (500, "header failed".to_owned()))?,
+    let mut response = empty_response(StatusCode::OK);
+    response.headers_mut().insert(
+        "x-mindclade-artifact-digest",
+        HeaderValue::from_str(&digest.to_string()).map_err(internal_header_error)?,
     );
-    response.add_header(
-        Header::from_bytes("X-Mindclade-Artifact-Size", size.to_string())
-            .map_err(|()| (500, "header failed".to_owned()))?,
+    response.headers_mut().insert(
+        "x-mindclade-artifact-size",
+        HeaderValue::from_str(&size.to_string()).map_err(internal_header_error)?,
     );
     Ok(response)
 }
 
-fn decode_path_segment(value: &str) -> Result<String, (u16, String)> {
+async fn store_call<T, F>(limits: &WorkLimits, operation: F) -> Result<T, HttpError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ArtifactError> + Send + 'static,
+{
+    let storage_permit = Arc::clone(&limits.storage)
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "artifact storage capacity is unavailable".to_owned(),
+            )
+        })?;
+    task::spawn_blocking(move || {
+        let _storage_permit = storage_permit;
+        operation()
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "artifact storage operation failed".to_owned(),
+        )
+    })?
+    .map_err(|error| store_error(&error))
+}
+
+async fn read_limited(
+    mut body: Incoming,
+    maximum: u64,
+    body_read_timeout: Duration,
+) -> Result<Vec<u8>, HttpError> {
+    if body.size_hint().lower() > maximum
+        || body
+            .size_hint()
+            .upper()
+            .is_some_and(|upper| upper > maximum)
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body is too large".to_owned(),
+        ));
+    }
+    let read = async {
+        let mut bytes = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "request body could not be read".to_owned(),
+                )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                let new_length = (bytes.len() as u64).checked_add(data.len() as u64).ok_or((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body is too large".to_owned(),
+                ))?;
+                if new_length > maximum {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body is too large".to_owned(),
+                    ));
+                }
+                bytes.extend_from_slice(&data);
+            }
+        }
+        Ok(bytes)
+    };
+    time::timeout(body_read_timeout, read).await.map_err(|_| {
+        (
+            StatusCode::REQUEST_TIMEOUT,
+            "request body read timed out".to_owned(),
+        )
+    })?
+}
+
+fn decode_path_segment(value: &str) -> Result<String, HttpError> {
     fn hexadecimal(value: u8) -> Option<u8> {
         match value {
             b'0'..=b'9' => Some(value - b'0'),
@@ -303,79 +567,115 @@ fn decode_path_segment(value: &str) -> Result<String, (u16, String)> {
             continue;
         }
         if index + 2 >= source.len() {
-            return Err((400, "artifact path encoding is invalid".to_owned()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "artifact path encoding is invalid".to_owned(),
+            ));
         }
-        let high = hexadecimal(source[index + 1])
-            .ok_or((400, "artifact path encoding is invalid".to_owned()))?;
-        let low = hexadecimal(source[index + 2])
-            .ok_or((400, "artifact path encoding is invalid".to_owned()))?;
+        let high = hexadecimal(source[index + 1]).ok_or((
+            StatusCode::BAD_REQUEST,
+            "artifact path encoding is invalid".to_owned(),
+        ))?;
+        let low = hexadecimal(source[index + 2]).ok_or((
+            StatusCode::BAD_REQUEST,
+            "artifact path encoding is invalid".to_owned(),
+        ))?;
         let byte = (high << 4) | low;
         if matches!(byte, b'/' | b'\\' | b'%') {
-            return Err((400, "encoded path separators are forbidden".to_owned()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "encoded path separators are forbidden".to_owned(),
+            ));
         }
         decoded.push(byte);
         index += 3;
     }
-    String::from_utf8(decoded).map_err(|_| (400, "artifact path is not UTF-8".to_owned()))
-}
-
-fn capability_header(request: &Request) -> Result<Capability, (u16, String)> {
-    let encoded = request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv("X-Mindclade-Capability"))
-        .map(|header| header.value.as_str())
-        .ok_or((401, "capability is required".to_owned()))?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| (401, "capability encoding is invalid".to_owned()))?;
-    serde_json::from_slice(&bytes).map_err(|_| (401, "capability payload is invalid".to_owned()))
-}
-
-fn read_limited(request: &mut Request, maximum: u64) -> Result<Vec<u8>, (u16, String)> {
-    let mut bytes = Vec::new();
-    request
-        .as_reader()
-        .take(maximum + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| (400, "request body could not be read".to_owned()))?;
-    if bytes.len() as u64 > maximum {
-        return Err((413, "request body is too large".to_owned()));
-    }
-    Ok(bytes)
-}
-
-fn json_response(body: String, status: u16) -> ResponseBox {
-    Response::from_string(body)
-        .with_status_code(status)
-        .with_header(
-            Header::from_bytes("Content-Type", "application/json").expect("static header is valid"),
+    String::from_utf8(decoded).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "artifact path is not UTF-8".to_owned(),
         )
+    })
+}
+
+fn capability_header(headers: &HeaderMap) -> Result<Capability, HttpError> {
+    let encoded = headers
+        .get("x-mindclade-capability")
+        .and_then(|value| value.to_str().ok())
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "capability is required".to_owned(),
+        ))?;
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "capability encoding is invalid".to_owned(),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "capability payload is invalid".to_owned(),
+        )
+    })
+}
+
+fn empty_response(status: StatusCode) -> Response<HttpBody> {
+    let mut response = Response::new(full_body(Bytes::new()));
+    *response.status_mut() = status;
+    response
+}
+
+fn json_response(body: String, status: StatusCode) -> Response<HttpBody> {
+    let mut response = Response::new(full_body(Bytes::from(body)));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
+}
+
+fn full_body(bytes: Bytes) -> HttpBody {
+    Full::new(bytes)
+        .map_err(|never| -> BoxError { match never {} })
         .boxed()
 }
 
-fn store_error(error: &crate::ArtifactError) -> (u16, String) {
+fn internal_header_error(_: hyper::header::InvalidHeaderValue) -> HttpError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "response header failed".to_owned(),
+    )
+}
+
+fn store_error(error: &ArtifactError) -> HttpError {
     let status = match error {
-        crate::ArtifactError::UploadNotFound => 404,
-        crate::ArtifactError::Io(value) if value.kind() == std::io::ErrorKind::NotFound => 404,
-        crate::ArtifactError::OffsetMismatch { .. }
-        | crate::ArtifactError::SizeExceeded
-        | crate::ArtifactError::Integrity
-        | crate::ArtifactError::Replay => 409,
-        crate::ArtifactError::Capacity => 429,
-        _ => 500,
+        ArtifactError::UploadNotFound => StatusCode::NOT_FOUND,
+        ArtifactError::Io(value) if value.kind() == io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND
+        }
+        ArtifactError::OffsetMismatch { .. }
+        | ArtifactError::SizeExceeded
+        | ArtifactError::Integrity
+        | ArtifactError::Replay => StatusCode::CONFLICT,
+        ArtifactError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_path_segment, serve};
+    use super::{
+        MAX_CONCURRENT_REQUESTS, WorkLimits, decode_path_segment, empty_response,
+        retain_request_capacity, serve, serve_with_limits, store_call,
+    };
     use crate::{
         Capability, CapabilityOperation, CapabilityVerifier, Digest, FilesystemStore, Scope,
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use ed25519_dalek::{Signer as _, SigningKey};
+    use hyper::StatusCode;
     use std::{
         collections::HashMap,
         io::{Read as _, Write as _},
@@ -384,6 +684,7 @@ mod tests {
         thread,
         time::Duration,
     };
+    use tokio::{net::TcpStream as TokioTcpStream, sync::Semaphore};
 
     #[test]
     fn artifact_digest_segment_accepts_literal_or_encoded_colon() {
@@ -405,7 +706,106 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_head_attests_exact_digest_and_size() {
+    fn response_body_holds_request_capacity_until_dropped() {
+        let limits = WorkLimits::new();
+        let permit = Arc::clone(&limits.requests).try_acquire_owned().unwrap();
+        let response = retain_request_capacity(empty_response(StatusCode::OK), permit);
+        assert_eq!(
+            limits.requests.available_permits(),
+            MAX_CONCURRENT_REQUESTS - 1
+        );
+        drop(response);
+        assert_eq!(limits.requests.available_permits(), MAX_CONCURRENT_REQUESTS);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_store_call_retains_capacity_until_blocking_work_finishes() {
+        let limits = WorkLimits {
+            connections: Arc::new(Semaphore::new(1)),
+            requests: Arc::new(Semaphore::new(1)),
+            storage: Arc::new(Semaphore::new(1)),
+        };
+        let worker_limits = limits.clone();
+        let (started_send, started_receive) = tokio::sync::oneshot::channel();
+        let (finish_send, finish_receive) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            store_call(&worker_limits, move || {
+                let _ = started_send.send(());
+                let _ = finish_receive.blocking_recv();
+                Ok(())
+            })
+            .await
+        });
+
+        started_receive.await.unwrap();
+        assert_eq!(limits.storage.available_permits(), 0);
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert_eq!(limits.storage.available_permits(), 0);
+
+        finish_send.send(()).unwrap();
+        wait_for_permits(&limits.storage, 1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slow_headers_cannot_create_unbounded_connection_tasks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Arc::new(FilesystemStore::new(temporary.path()).unwrap());
+        let verifier = Arc::new(CapabilityVerifier::with_clock(HashMap::new(), || 1_000));
+        let limits = WorkLimits {
+            connections: Arc::new(Semaphore::new(1)),
+            requests: Arc::new(Semaphore::new(1)),
+            storage: Arc::new(Semaphore::new(1)),
+        };
+        let observed_limits = limits.clone();
+        let address = unused_address();
+        let server_store = Arc::clone(&store);
+        let server = tokio::spawn(async move {
+            serve_with_limits(
+                &address.to_string(),
+                &server_store,
+                &verifier,
+                Duration::from_secs(1),
+                limits,
+            )
+            .await
+            .unwrap();
+        });
+
+        let stalled = connect(address).await;
+        write_all(&stalled, b"GET /").await;
+        wait_for_permits(&observed_limits.connections, 0).await;
+
+        let rejected = connect(address).await;
+        write_all(&rejected, b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n").await;
+        let mut byte = [0_u8; 1];
+        let closed =
+            tokio::time::timeout(Duration::from_millis(500), read_once(&rejected, &mut byte))
+                .await
+                .expect("over-capacity connection remained open");
+        assert!(
+            matches!(closed, Ok(0) | Err(_)),
+            "unexpected read: {closed:?}"
+        );
+
+        drop(stalled);
+        wait_for_permits(&observed_limits.connections, 1).await;
+        let health = tokio::task::spawn_blocking(move || {
+            raw_response(address, |stream| {
+                write!(
+                    stream,
+                    "GET /healthz HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+                )
+            })
+        })
+        .await
+        .unwrap();
+        assert!(health.starts_with("HTTP/1.1 204"), "{health}");
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_head_attests_exact_digest_and_size() {
         let temporary = tempfile::tempdir().unwrap();
         let store = Arc::new(FilesystemStore::new(temporary.path()).unwrap());
         let bytes = b"durably committed result";
@@ -425,24 +825,30 @@ mod tests {
             HashMap::from([("head-test-key".to_owned(), signing_key.verifying_key())]),
             || 1_000,
         ));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
+        let address = unused_address();
         let server_store = Arc::clone(&store);
-        thread::spawn(move || {
-            serve(&address.to_string(), &server_store, &verifier).unwrap();
+        let server = tokio::spawn(async move {
+            serve(
+                &address.to_string(),
+                &server_store,
+                &verifier,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
         });
 
         let capability =
             signed_download_capability(&signing_key, scope, digest.clone(), bytes.len() as u64);
         let response = head(address, &digest, Some(&capability));
+        let lower = response.to_ascii_lowercase();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(
-            response.contains(&format!("X-Mindclade-Artifact-Digest: {digest}\r\n")),
+            lower.contains(&format!("x-mindclade-artifact-digest: {digest}\r\n")),
             "{response}"
         );
         assert!(
-            response.contains(&format!("X-Mindclade-Artifact-Size: {}\r\n", bytes.len())),
+            lower.contains(&format!("x-mindclade-artifact-size: {}\r\n", bytes.len())),
             "{response}"
         );
 
@@ -454,6 +860,109 @@ mod tests {
         let wrong_size = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&wrong_size).unwrap());
         assert!(head(address, &digest, Some(&wrong_size)).starts_with("HTTP/1.1 403"));
         assert!(head(address, &digest, None).starts_with("HTTP/1.1 401"));
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_upload_body_times_out_without_blocking_health() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Arc::new(FilesystemStore::new(temporary.path()).unwrap());
+        let verifier = Arc::new(CapabilityVerifier::with_clock(HashMap::new(), || 1_000));
+        let address = unused_address();
+        let server_store = Arc::clone(&store);
+        let server = tokio::spawn(async move {
+            serve(
+                &address.to_string(),
+                &server_store,
+                &verifier,
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap();
+        });
+
+        let (ready_send, mut ready_receive) = tokio::sync::mpsc::channel(1);
+        let stalled = tokio::task::spawn_blocking(move || {
+            raw_response(address, |stream| {
+                write!(
+                    stream,
+                    "POST /v1alpha1/uploads HTTP/1.1\r\nHost: {address}\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{{"
+                )?;
+                ready_send.blocking_send(()).unwrap();
+                Ok(())
+            })
+        });
+        tokio::time::timeout(Duration::from_millis(250), ready_receive.recv())
+            .await
+            .expect("stalled client did not connect")
+            .expect("stalled client readiness channel closed");
+        assert!(
+            !stalled.is_finished(),
+            "stalled body finished before timeout"
+        );
+
+        let health = tokio::task::spawn_blocking(move || {
+            raw_response(address, |stream| {
+                write!(
+                    stream,
+                    "GET /healthz HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+                )
+            })
+        });
+        let health = tokio::time::timeout(Duration::from_millis(250), health)
+            .await
+            .expect("health check waited for stalled upload bodies")
+            .unwrap();
+        assert!(health.starts_with("HTTP/1.1 204"), "{health}");
+        assert!(
+            !stalled.is_finished(),
+            "health check outlasted body timeout"
+        );
+        let stalled = stalled.await.unwrap();
+        assert!(stalled.starts_with("HTTP/1.1 408"), "{stalled}");
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_capacity_is_bounded_and_health_bypasses_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Arc::new(FilesystemStore::new(temporary.path()).unwrap());
+        let verifier = Arc::new(CapabilityVerifier::with_clock(HashMap::new(), || 1_000));
+        let limits = WorkLimits::new();
+        let capacity_permit = Arc::clone(&limits.requests)
+            .acquire_many_owned(u32::try_from(MAX_CONCURRENT_REQUESTS).unwrap())
+            .await
+            .unwrap();
+        let address = unused_address();
+        let server_store = Arc::clone(&store);
+        let server = tokio::spawn(async move {
+            serve_with_limits(
+                &address.to_string(),
+                &server_store,
+                &verifier,
+                Duration::from_secs(1),
+                limits,
+            )
+            .await
+            .unwrap();
+        });
+
+        let rejected = raw_response(address, |stream| {
+            write!(
+                stream,
+                "POST /v1alpha1/uploads HTTP/1.1\r\nHost: {address}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            )
+        });
+        assert!(rejected.starts_with("HTTP/1.1 503"), "{rejected}");
+        let health = raw_response(address, |stream| {
+            write!(
+                stream,
+                "GET /healthz HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            )
+        });
+        assert!(health.starts_with("HTTP/1.1 204"), "{health}");
+        drop(capacity_permit);
+        server.abort();
     }
 
     fn signed_download_capability(
@@ -479,6 +988,76 @@ mod tests {
     }
 
     fn head(address: std::net::SocketAddr, digest: &Digest, capability: Option<&str>) -> String {
+        raw_response(address, |stream| {
+            let capability_header = capability
+                .map(|value| format!("X-Mindclade-Capability: {value}\r\n"))
+                .unwrap_or_default();
+            write!(
+                stream,
+                "HEAD /v1alpha1/artifacts/{digest} HTTP/1.1\r\nHost: {address}\r\n{capability_header}Connection: close\r\n\r\n"
+            )
+        })
+    }
+
+    fn unused_address() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        address
+    }
+
+    async fn connect(address: std::net::SocketAddr) -> TokioTcpStream {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match TokioTcpStream::connect(address).await {
+                    Ok(stream) => return stream,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(1)).await,
+                }
+            }
+        })
+        .await
+        .expect("artifact HTTP server did not start")
+    }
+
+    async fn write_all(stream: &TokioTcpStream, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            stream.writable().await.unwrap();
+            match stream.try_write(bytes) {
+                Ok(0) => panic!("artifact HTTP connection closed while writing"),
+                Ok(written) => bytes = &bytes[written..],
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("artifact HTTP write failed: {error}"),
+            }
+        }
+    }
+
+    async fn read_once(stream: &TokioTcpStream, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            stream.readable().await?;
+            match stream.try_read(buffer) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                result => return result,
+            }
+        }
+    }
+
+    async fn wait_for_permits(semaphore: &Semaphore, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if semaphore.available_permits() == expected {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("semaphore did not reach the expected capacity");
+    }
+
+    fn raw_response(
+        address: std::net::SocketAddr,
+        write_request: impl FnOnce(&mut TcpStream) -> std::io::Result<()>,
+    ) -> String {
         let mut stream = (0..100)
             .find_map(|_| {
                 if let Ok(stream) = TcpStream::connect(address) {
@@ -492,14 +1071,7 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let capability_header = capability
-            .map(|value| format!("X-Mindclade-Capability: {value}\r\n"))
-            .unwrap_or_default();
-        write!(
-            stream,
-            "HEAD /v1alpha1/artifacts/{digest} HTTP/1.1\r\nHost: {address}\r\n{capability_header}Connection: close\r\n\r\n"
-        )
-        .unwrap();
+        write_request(&mut stream).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         response

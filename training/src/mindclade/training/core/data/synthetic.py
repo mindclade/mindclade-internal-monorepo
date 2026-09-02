@@ -10,11 +10,14 @@ from enum import StrEnum
 from typing import Any
 
 import torch
+from mindclade.models.components.diffusion import VESchedule
 from mindclade.training.api.task import BatchEnvelope
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, Sampler
 
 DATASET_VERSION = "synthetic-cladefold-v1"
+DEFAULT_SIGMA_MIN = 0.01
+DEFAULT_SIGMA_MAX = 20.0
 
 
 class SyntheticSplit(StrEnum):
@@ -51,6 +54,8 @@ class DeterministicSyntheticDataset(Dataset[SyntheticExample]):
         seed: int = 17,
         token_count: int = 8,
         atom_count: int = 16,
+        sigma_min: float = DEFAULT_SIGMA_MIN,
+        sigma_max: float = DEFAULT_SIGMA_MAX,
     ) -> None:
         if token_count <= 0 or atom_count < token_count:
             raise ValueError("synthetic data requires atom_count >= token_count > 0")
@@ -60,6 +65,7 @@ class DeterministicSyntheticDataset(Dataset[SyntheticExample]):
         self.seed = seed
         self.token_count = token_count
         self.atom_count = atom_count
+        self.noise_schedule = VESchedule(sigma_min, sigma_max)
         self._start, self._stop = _SPLIT_RANGES[self.split]
 
     def __len__(self) -> int:
@@ -125,9 +131,9 @@ class DeterministicSyntheticDataset(Dataset[SyntheticExample]):
         target_coordinates -= target_coordinates.mean(dim=0, keepdim=True)
         target_mask = atom_mask.clone()
         diffusion_time = 0.05 + 0.90 * torch.rand((), generator=generator, dtype=torch.float32)
-        noisy_coordinates = target_coordinates + diffusion_time * torch.randn(
-            atom_count, 3, generator=generator, dtype=torch.float32
-        )
+        noise = torch.randn(atom_count, 3, generator=generator, dtype=torch.float32)
+        sigma = self.noise_schedule.sigma(diffusion_time)
+        noisy_coordinates = target_coordinates + sigma * noise
 
         bond_indices = torch.stack(
             (
@@ -245,6 +251,8 @@ def build_synthetic_loader(
     seed: int = 17,
     token_count: int = 8,
     atom_count: int = 16,
+    sigma_min: float = DEFAULT_SIGMA_MIN,
+    sigma_max: float = DEFAULT_SIGMA_MAX,
     shuffle: bool = False,
 ) -> DeterministicSyntheticLoader:
     if batch_size <= 0:
@@ -254,6 +262,8 @@ def build_synthetic_loader(
         seed=seed,
         token_count=token_count,
         atom_count=atom_count,
+        sigma_min=sigma_min,
+        sigma_max=sigma_max,
     )
     return DeterministicSyntheticLoader(
         dataset,

@@ -12,6 +12,12 @@ import (
 
 type staticAuthenticator struct{ claims Claims }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
 func (a staticAuthenticator) Authenticate(string) (Claims, error) { return a.claims, nil }
 
 func TestGatewayEnforcesScopeAndOverwritesIdentityHeaders(t *testing.T) {
@@ -61,5 +67,50 @@ func TestRouteTemplateRemovesResourceIdentifiers(t *testing.T) {
 	want := "/v1alpha1/tenants/{tenant}/projects/{project}/inference-jobs/{job}/events"
 	if got != want {
 		t.Fatalf("route template = %q, want %q", got, want)
+	}
+}
+
+func TestGatewayDefaultClientCoversMaximumControlPlaneWork(t *testing.T) {
+	upstream, _ := url.Parse("http://control-plane.invalid")
+	gateway := New(staticAuthenticator{}, upstream, nil, nil, nil)
+	if gateway.client.Timeout != defaultControlPlaneTimeout || gateway.client.Timeout < 155*time.Second {
+		t.Fatalf("default upstream timeout = %s", gateway.client.Timeout)
+	}
+}
+
+func TestGatewayReportsUpstreamDeadlineAsGatewayTimeout(t *testing.T) {
+	upstream, _ := url.Parse("http://control-plane.invalid")
+	client := &http.Client{
+		Timeout: 10 * time.Millisecond,
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		}),
+	}
+	signer, err := NewInternalIdentitySigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := staticAuthenticator{Claims{"subject-1", "tenant-a", map[string]bool{"project-a": true}, time.Now().Add(time.Hour)}}
+	gateway := New(auth, upstream, client, nil, signer)
+	request := httptest.NewRequest(http.MethodPost, "/v1alpha1/tenants/tenant-a/projects/project-a/inference-jobs", strings.NewReader("{}"))
+	request.Header.Set("Authorization", "Bearer signed-token")
+	response := httptest.NewRecorder()
+	gateway.ServeHTTP(response, request)
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("upstream timeout status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestPublicHTTPServerHasBoundedReadAndWritePolicy(t *testing.T) {
+	server := newPublicHTTPServer("127.0.0.1:0", http.NotFoundHandler(), 60*time.Second, 25*time.Millisecond)
+	upstreamTimeout := ControlPlaneClientTimeout(60 * time.Second)
+	if server.ReadHeaderTimeout != 5*time.Second || server.ReadTimeout != 25*time.Millisecond ||
+		server.WriteTimeout != 25*time.Millisecond+upstreamTimeout+5*time.Second || server.IdleTimeout != 60*time.Second ||
+		server.MaxHeaderBytes != 32*1024 {
+		t.Fatalf("public server policy = %+v", server)
+	}
+	if server.WriteTimeout <= server.ReadTimeout+upstreamTimeout {
+		t.Fatalf("write timeout %s does not cover read %s and upstream %s", server.WriteTimeout, server.ReadTimeout, upstreamTimeout)
 	}
 }

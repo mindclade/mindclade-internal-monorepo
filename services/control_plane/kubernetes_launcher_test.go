@@ -303,6 +303,20 @@ func TestKubernetesLauncherRequiresValidResourceIncarnation(t *testing.T) {
 	}
 }
 
+func TestKubernetesLauncherRequiresScratchForTheAdmittedArtifactEnvelope(t *testing.T) {
+	client := &recordingKubernetesClient{}
+	launcher, _, _ := testLauncher(t, client)
+	config := launcher.config
+	config.ArtifactScratchLimit = "31Gi"
+	if err := config.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("undersized artifact scratch error = %v", err)
+	}
+	config.ArtifactScratchLimit = "32Gi"
+	if err := config.Validate(); err != nil {
+		t.Fatalf("minimum artifact scratch was rejected: %v", err)
+	}
+}
+
 func TestKubernetesLauncherPublishesOnlyAfterSecretAndRetainedPVC(t *testing.T) {
 	client := &recordingKubernetesClient{}
 	launcher, attempt, schedulerPublicKey := testLauncher(t, client)
@@ -314,6 +328,12 @@ func TestKubernetesLauncherPublishesOnlyAfterSecretAndRetainedPVC(t *testing.T) 
 	}
 	jobSet := client.calls[0].document.(map[string]any)
 	jobSetJSON, _ := json.Marshal(jobSet)
+	if int64(len(jobSetJSON))*int64(managedJobSetPageLimit) >= maximumAPIResponse/2 {
+		t.Fatalf(
+			"managed JobSet page has insufficient response-cap margin: item=%d, page=%d, cap=%d",
+			len(jobSetJSON), managedJobSetPageLimit, maximumAPIResponse,
+		)
+	}
 	if bytes.Contains(jobSetJSON, []byte(attempt.CompletionCapability)) || bytes.Contains(jobSetJSON, []byte("download_capability")) {
 		t.Fatal("JobSet exposed bearer capability material")
 	}
@@ -375,6 +395,19 @@ func TestKubernetesLauncherPublishesOnlyAfterSecretAndRetainedPVC(t *testing.T) 
 	if !bytes.Contains(jobSetJSON, []byte(`"persistentVolumeClaim":{"claimName":"`+attemptPVCName(testResourceIncarnation, attempt.Job.ID, 3)+`"`)) || bytes.Contains(jobSetJSON, []byte(`"name":"job-results","emptyDir"`)) {
 		t.Fatal("worker result volume is not the retained per-attempt PVC")
 	}
+	podSpec := jobSet["spec"].(map[string]any)["replicatedJobs"].([]any)[0].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	containers := []any{podSpec["initContainers"].([]any)[0], podSpec["containers"].([]any)[0]}
+	expectedEphemeralLimit := launcher.config.podEphemeralStorageLimit()
+	if expectedEphemeralLimit != "50Gi" {
+		t.Fatalf("pod ephemeral storage limit = %q", expectedEphemeralLimit)
+	}
+	for _, value := range containers {
+		resources := value.(map[string]any)["resources"].(map[string]any)
+		if resources["requests"].(map[string]string)["ephemeral-storage"] != expectedEphemeralLimit ||
+			resources["limits"].(map[string]string)["ephemeral-storage"] != expectedEphemeralLimit {
+			t.Fatalf("ephemeral storage resources = %+v", resources)
+		}
+	}
 }
 
 func TestKubernetesLauncherRollsBackPartialResources(t *testing.T) {
@@ -389,7 +422,7 @@ func TestKubernetesLauncherRollsBackPartialResources(t *testing.T) {
 			deletes = append(deletes, call.path)
 		}
 	}
-	if len(deletes) != 2 || !strings.Contains(deletes[0], "/jobsets/") || !strings.Contains(deletes[1], "/secrets/") {
+	if len(deletes) != 3 || !strings.Contains(deletes[0], "/jobsets/") || !strings.Contains(deletes[1], "/secrets/") || !strings.Contains(deletes[2], "/persistentvolumeclaims/") {
 		t.Fatalf("partial launch cleanup = %v", deletes)
 	}
 }

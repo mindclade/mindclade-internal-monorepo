@@ -6,11 +6,13 @@ import pytest
 import torch
 from mindclade.models import CladeFoldConfig, CladeFoldModel
 from mindclade.models.components.pairformer.pairformer_block import PairformerBlock
+from mindclade.training import PrecisionConfig, PrecisionMode
 from mindclade.training.core.data import (
     DeterministicSyntheticDataset,
     SyntheticSplit,
     collate_cladefold_examples,
 )
+from mindclade.training.execution.single_process.engine import SingleProcessEngine
 from mindclade.training.providers.pytorch.fsdp2_adapter import apply_fsdp2, fsdp2_capability
 
 
@@ -49,6 +51,42 @@ def test_cladefold_cuda_bfloat16_forward_is_finite() -> None:
         output = model(batch)
     assert torch.isfinite(output.loss)
     assert torch.isfinite(output.denoised_coordinates).all()
+
+
+@pytest.mark.gpu
+def test_cuda_fp16_amp_update_keeps_fp32_parameters_and_gradients() -> None:
+    assert torch.cuda.is_available()
+    device = torch.device("cuda", 0)
+    torch.manual_seed(23)
+    engine = SingleProcessEngine.create(
+        PrecisionConfig(mode=PrecisionMode.FP16),
+        device=device,
+    )
+    model = engine.prepare_model(torch.nn.Linear(4, 2))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    inputs = torch.randn((8, 4), device=device)
+    targets = torch.randn((8, 2), device=device)
+    before = [parameter.detach().clone() for parameter in model.parameters()]
+
+    optimizer.zero_grad(set_to_none=True)
+    with engine.precision.autocast():
+        loss = torch.nn.functional.mse_loss(model(inputs), targets)
+    engine.backward(loss)
+    engine.unscale_(optimizer)
+
+    assert all(parameter.dtype is torch.float32 for parameter in model.parameters())
+    assert all(
+        parameter.grad is not None
+        and parameter.grad.dtype is torch.float32
+        and torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
+    engine.optimizer_step(optimizer)
+    assert all(torch.isfinite(parameter).all() for parameter in model.parameters())
+    assert any(
+        not torch.equal(previous, parameter)
+        for previous, parameter in zip(before, model.parameters(), strict=True)
+    )
 
 
 @pytest.mark.gpu

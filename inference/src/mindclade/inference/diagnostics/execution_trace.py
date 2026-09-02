@@ -22,6 +22,13 @@ _SENSITIVE_FRAGMENTS = (
     "authorization",
     "secret",
 )
+_SAFE_STRING_VALUES = {
+    "execution_mode": frozenset({"auto", "compiled", "eager"}),
+}
+
+
+def _pseudonym(identifier: str) -> str:
+    return "id:" + hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
 
 
 def _sanitize_value(value: Any) -> Any:
@@ -36,7 +43,7 @@ def _sanitize_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return value[:128]
+        return _pseudonym(value)
     if isinstance(value, (tuple, list, set, frozenset)):
         return {"kind": "collection", "length": len(value)}
     return {"kind": type(value).__name__}
@@ -68,7 +75,7 @@ class ExecutionTrace:
 
     @staticmethod
     def pseudonym(identifier: str) -> str:
-        return "id:" + hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
+        return _pseudonym(identifier)
 
     def record(self, name: str, **attributes: Any) -> TraceEvent:
         if len(self._events) >= self._max_events:
@@ -80,6 +87,12 @@ class ExecutionTrace:
             lowered = key.lower()
             if any(fragment in lowered for fragment in _SENSITIVE_FRAGMENTS):
                 sanitized[key] = "<redacted>"
+            elif (
+                isinstance(value, str)
+                and lowered in _SAFE_STRING_VALUES
+                and value in _SAFE_STRING_VALUES[lowered]
+            ):
+                sanitized[key] = value
             else:
                 sanitized[key] = _sanitize_value(value)
         event = TraceEvent(

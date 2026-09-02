@@ -39,6 +39,7 @@ spec:
             - {name: MINDCLADE_WORKER_IMAGE, value: "us-docker.pkg.dev/mindclade-development/runtime/inference-worker@sha256:4444444444444444444444444444444444444444444444444444444444444444"}
             - {name: MINDCLADE_ARTIFACT_PROXY_URL, value: "http://artifact-proxy:8082"}
             - {name: MINDCLADE_ARTIFACT_VERIFY_TIMEOUT_SECONDS, value: "10"}
+            - {name: MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS, value: "70"}
             - {name: MINDCLADE_STAGING_CAPABILITY_TTL_SECONDS, value: "5400"}
             - {name: MINDCLADE_CONTROL_PLANE_INTERNAL_URL, value: "http://control-plane:8081"}
             - {name: MINDCLADE_RESULT_STORAGE_CLASS, value: "premium-rwo"}

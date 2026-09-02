@@ -4,11 +4,13 @@ import json
 import struct
 
 import pytest
+import torch
 
 from mindclade.models import CladeFoldModel
 from mindclade.models.api.serialization import (
     SerializationError,
     decode_safetensors,
+    encode_safetensors,
     sha256_file,
 )
 
@@ -109,3 +111,25 @@ def test_malformed_safetensors_header_types_raise_serialization_error() -> None:
 
     with pytest.raises(SerializationError, match="invalid tensor shape"):
         decode_safetensors(payload)
+
+
+@pytest.mark.parametrize(
+    ("shape", "dtype"),
+    [
+        ((0,), torch.float32),
+        ((2, 0, 3), torch.bfloat16),
+        ((1, 0), torch.bool),
+    ],
+)
+def test_zero_element_safetensors_round_trip(shape, dtype: torch.dtype) -> None:
+    tensors = {
+        "empty": torch.empty(shape, dtype=dtype),
+        "value": torch.tensor([1, 2, 3], dtype=torch.int64),
+    }
+
+    decoded = decode_safetensors(encode_safetensors(tensors))
+
+    assert decoded["empty"].shape == shape
+    assert decoded["empty"].dtype is dtype
+    assert decoded["empty"].numel() == 0
+    torch.testing.assert_close(decoded["value"], tensors["value"])

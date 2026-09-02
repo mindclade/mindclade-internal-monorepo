@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from .._identity import content_digest, require_sha256_digest
 from ..contracts.execution_mode_contract import ExecutionMode
+
+if TYPE_CHECKING:
+    from ..compilation.compile_key import CompileKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,10 +21,14 @@ class QualificationKey:
     serving_revision_digest: str
     mode: ExecutionMode
     device_type: str
+    device_capability: str
     dtype: str
     shape_signature: tuple[int, ...]
     sampler_digest: str
     runtime_config_digest: str
+    output_contract_digest: str
+    torch_version: str
+    compiler_version: str
 
     def __post_init__(self) -> None:
         for name in (
@@ -27,14 +36,44 @@ class QualificationKey:
             "serving_revision_digest",
             "sampler_digest",
             "runtime_config_digest",
+            "output_contract_digest",
         ):
             object.__setattr__(self, name, require_sha256_digest(getattr(self, name), field=name))
         if self.mode is ExecutionMode.AUTO:
             raise ValueError("AUTO is a selection request, not a qualifiable execution mode")
-        if not self.device_type or not self.dtype:
-            raise ValueError("device_type and dtype cannot be empty")
+        for name in (
+            "device_type",
+            "device_capability",
+            "dtype",
+            "torch_version",
+            "compiler_version",
+        ):
+            if not getattr(self, name):
+                raise ValueError(f"{name} cannot be empty")
         if any(dimension < 0 for dimension in self.shape_signature):
             raise ValueError("shape signature dimensions cannot be negative")
+
+    @classmethod
+    def from_compile_key(
+        cls,
+        compile_key: CompileKey,
+        *,
+        mode: ExecutionMode,
+    ) -> QualificationKey:
+        return cls(
+            model_digest=compile_key.model_digest,
+            serving_revision_digest=compile_key.serving_revision_digest,
+            mode=mode,
+            device_type=compile_key.device_type,
+            device_capability=compile_key.device_capability,
+            dtype=compile_key.dtype,
+            shape_signature=compile_key.shape_signature,
+            sampler_digest=compile_key.sampler_digest,
+            runtime_config_digest=compile_key.runtime_config_digest,
+            output_contract_digest=compile_key.output_contract_digest,
+            torch_version=compile_key.torch_version,
+            compiler_version=compile_key.compiler_version,
+        )
 
     def with_mode(self, mode: ExecutionMode) -> QualificationKey:
         return QualificationKey(
@@ -42,10 +81,14 @@ class QualificationKey:
             serving_revision_digest=self.serving_revision_digest,
             mode=mode,
             device_type=self.device_type,
+            device_capability=self.device_capability,
             dtype=self.dtype,
             shape_signature=self.shape_signature,
             sampler_digest=self.sampler_digest,
             runtime_config_digest=self.runtime_config_digest,
+            output_contract_digest=self.output_contract_digest,
+            torch_version=self.torch_version,
+            compiler_version=self.compiler_version,
         )
 
     @property
@@ -61,7 +104,7 @@ class ModeQualification:
     qualified_at: str
     max_absolute_error: float
     max_relative_error: float
-    qualifier_version: str = "mode-qualification.v1alpha1"
+    qualifier_version: str = "mode-qualification.v1alpha2"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -75,8 +118,13 @@ class ModeQualification:
             raise ValueError("qualified_at must be an ISO-8601 timestamp") from exc
         if parsed.tzinfo is None:
             raise ValueError("qualified_at must include a timezone")
-        if self.max_absolute_error < 0 or self.max_relative_error < 0:
-            raise ValueError("qualification errors cannot be negative")
+        if (
+            not math.isfinite(self.max_absolute_error)
+            or not math.isfinite(self.max_relative_error)
+            or self.max_absolute_error < 0
+            or self.max_relative_error < 0
+        ):
+            raise ValueError("qualification errors must be finite and non-negative")
 
     @classmethod
     def passed_record(

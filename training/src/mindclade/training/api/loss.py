@@ -40,7 +40,11 @@ class LossTerm:
 
 @dataclass(frozen=True)
 class LossReport:
-    """Stable loss output consumed by every execution engine."""
+    """Stable loss output consumed by every execution engine.
+
+    The reference trainer interprets these scalar values as per-sample means
+    when it combines differently sized microbatches.
+    """
 
     total: Tensor
     terms: Mapping[str, LossTerm]

@@ -20,7 +20,7 @@ result
 *.pt
 *.pth
 checkpoints/
-artifacts/
+/artifacts/
 generated-data/
 *.prof
 *.trace

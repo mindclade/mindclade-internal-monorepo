@@ -89,10 +89,11 @@ func main() {
 		log.Fatal(err)
 	}
 	artifactProxyURL := required("MINDCLADE_ARTIFACT_PROXY_URL")
+	artifactVerifyTimeout := requiredSeconds("MINDCLADE_ARTIFACT_VERIFY_TIMEOUT_SECONDS", 1, 30)
 	artifactVerifier, err := controlplane.NewHTTPResultArtifactVerifier(
 		artifactProxyURL,
 		resultCapabilityIssuer,
-		requiredSeconds("MINDCLADE_ARTIFACT_VERIFY_TIMEOUT_SECONDS", 1, 30),
+		artifactVerifyTimeout,
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -116,6 +117,14 @@ func main() {
 		resultPublication,
 	)
 	launchTimeout := requiredSeconds("MINDCLADE_KUBERNETES_LAUNCH_TIMEOUT_SECONDS", 1, 30)
+	handlerTimeout := requiredSeconds("MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS", 1, 300)
+	minimumHandlerTimeout := controlplane.MinimumHandlerTimeout(launchTimeout, artifactVerifyTimeout)
+	if handlerTimeout < minimumHandlerTimeout {
+		log.Fatalf(
+			"MINDCLADE_CONTROL_PLANE_HANDLER_TIMEOUT_SECONDS must cover launch rollback and artifact verification (minimum %d seconds)",
+			int64(minimumHandlerTimeout/time.Second),
+		)
+	}
 	kubernetesClient, err := controlplane.NewKubernetesRESTClient(
 		required("MINDCLADE_KUBERNETES_API_SERVER"),
 		required("MINDCLADE_KUBERNETES_TOKEN_FILE"),
@@ -177,12 +186,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &http.Server{
-		Addr: address, Handler: controlplane.NewHTTPHandlerWithDispatcher(service, identity, dispatcher),
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
-		WriteTimeout: launchTimeout + 15*time.Second, IdleTimeout: 60 * time.Second,
-		MaxHeaderBytes: 32 * 1024,
-	}
+	server := controlplane.NewPublicHTTPServer(
+		address,
+		controlplane.NewHTTPHandlerWithDispatcher(service, identity, dispatcher),
+		handlerTimeout,
+	)
 	log.Printf("control plane listening on %s", address)
 	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
 	runtimeErrors := make(chan error, 2)

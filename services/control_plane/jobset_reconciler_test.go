@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 type reconciliationKubernetesClient struct {
 	items               []kubernetesJobSetObservation
+	pages               map[string]kubernetesJobSetList
 	objects             map[string]bool
 	acknowledgeDeletion bool
 	calls               []kubernetesCall
@@ -40,11 +42,69 @@ func (c *reconciliationKubernetesClient) Exists(_ context.Context, path string) 
 
 func (c *reconciliationKubernetesClient) Read(_ context.Context, path string) ([]byte, error) {
 	c.calls = append(c.calls, kubernetesCall{method: http.MethodGet, path: path})
+	if c.pages != nil {
+		parsed, err := url.Parse(path)
+		if err != nil {
+			return nil, err
+		}
+		page, found := c.pages[parsed.Query().Get("continue")]
+		if !found {
+			return nil, errors.New("unexpected JobSet continuation token")
+		}
+		return json.Marshal(page)
+	}
 	return json.Marshal(kubernetesJobSetList{
 		APIVersion: "jobset.x-k8s.io/v1alpha2",
 		Kind:       "JobSetList",
 		Items:      c.items,
 	})
+}
+
+func TestJobSetReconcilerListsOnlyOwnedJobSetsAcrossBoundedPages(t *testing.T) {
+	first := kubernetesJobSetList{APIVersion: "jobset.x-k8s.io/v1alpha2", Kind: "JobSetList"}
+	first.Metadata.Continue = "next-page"
+	first.Items = []kubernetesJobSetObservation{{APIVersion: "jobset.x-k8s.io/v1alpha2", Kind: "JobSet"}}
+	second := kubernetesJobSetList{
+		APIVersion: "jobset.x-k8s.io/v1alpha2", Kind: "JobSetList",
+		Items: []kubernetesJobSetObservation{{APIVersion: "jobset.x-k8s.io/v1alpha2", Kind: "JobSet"}},
+	}
+	client := &reconciliationKubernetesClient{pages: map[string]kubernetesJobSetList{
+		"": first, "next-page": second,
+	}}
+	reconciler := &JobSetReconciler{client: client, config: reconciliationConfig()}
+	observations, err := reconciler.list(context.Background())
+	if err != nil || len(observations) != 2 {
+		t.Fatalf("paged list = (%d, %v)", len(observations), err)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("list calls = %+v", client.calls)
+	}
+	for index, call := range client.calls {
+		parsed, err := url.Parse(call.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := parsed.Query()
+		if query.Get("labelSelector") != managedJobSetSelector || query.Get("limit") != strconv.Itoa(managedJobSetPageLimit) {
+			t.Fatalf("list query %d = %v", index, query)
+		}
+	}
+	if parsed, _ := url.Parse(client.calls[1].path); parsed.Query().Get("continue") != "next-page" {
+		t.Fatalf("second-page path = %q", client.calls[1].path)
+	}
+}
+
+func TestJobSetReconcilerRejectsRepeatedContinuationToken(t *testing.T) {
+	first := kubernetesJobSetList{APIVersion: "jobset.x-k8s.io/v1alpha2", Kind: "JobSetList"}
+	first.Metadata.Continue = "repeated"
+	second := first
+	client := &reconciliationKubernetesClient{pages: map[string]kubernetesJobSetList{
+		"": first, "repeated": second,
+	}}
+	reconciler := &JobSetReconciler{client: client, config: reconciliationConfig()}
+	if _, err := reconciler.list(context.Background()); !errors.Is(err, ErrAttemptReconciliation) {
+		t.Fatalf("repeated continuation error = %v", err)
+	}
 }
 
 func reconciliationConfig() KubernetesAttemptLauncherConfig {

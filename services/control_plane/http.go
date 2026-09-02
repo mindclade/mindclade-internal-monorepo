@@ -10,7 +10,34 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const (
+	controlPlaneReadTimeout = 15 * time.Second
+	responseDeadlineMargin  = 5 * time.Second
+)
+
+// MinimumHandlerTimeout covers request-body reading, the longest handler work
+// budget, and a response-write margin. Launch rollback can make five bounded
+// Kubernetes calls in the worst case.
+func MinimumHandlerTimeout(launchTimeout, artifactVerifyTimeout time.Duration) time.Duration {
+	workTimeout := artifactVerifyTimeout
+	if launchWork := 5 * launchTimeout; launchWork > workTimeout {
+		workTimeout = launchWork
+	}
+	return controlPlaneReadTimeout + workTimeout + responseDeadlineMargin
+}
+
+// NewPublicHTTPServer applies the public control-plane HTTP deadline policy.
+func NewPublicHTTPServer(address string, handler http.Handler, handlerTimeout time.Duration) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: controlPlaneReadTimeout,
+		WriteTimeout: handlerTimeout, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 32 * 1024,
+	}
+}
 
 // HTTPHandler exposes the JSON and SSE transport after identity verification at the gateway.
 type HTTPHandler struct {

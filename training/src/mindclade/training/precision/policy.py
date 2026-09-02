@@ -44,5 +44,8 @@ def resolve_precision(config: PrecisionConfig, device: torch.device) -> Resolved
             raise PrecisionUnavailableError("CUDA device does not support bfloat16")
         return ResolvedPrecision(device, torch.bfloat16, torch.bfloat16)
     if config.mode is PrecisionMode.FP16:
-        return ResolvedPrecision(device, torch.float16, torch.float16)
+        # CUDA AMP requires FP32 master parameters. Casting the module itself to
+        # FP16 also produces FP16 gradients, which GradScaler deliberately
+        # refuses to unscale.
+        return ResolvedPrecision(device, torch.float32, torch.float16)
     raise PrecisionUnavailableError(f"unsupported precision mode: {config.mode}")

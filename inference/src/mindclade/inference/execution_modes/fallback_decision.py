@@ -46,12 +46,14 @@ def decide_fallback(
         return FallbackDecision(False, None, "fallback-disabled")
     if failure not in _FALLBACK_ELIGIBLE:
         return FallbackDecision(False, None, f"failure-class-{failure.value}-fails-closed")
+    if source_key.mode is not ExecutionMode.COMPILED or target_key.mode is not ExecutionMode.EAGER:
+        return FallbackDecision(False, None, "only-compiled-to-eager-fallback-is-supported")
     if source_key.model_digest != target_key.model_digest:
         return FallbackDecision(False, None, "model-digest-mismatch")
     if source_key.serving_revision_digest != target_key.serving_revision_digest:
         return FallbackDecision(False, None, "serving-revision-mismatch")
-    if source_key.mode is not ExecutionMode.COMPILED or target_key.mode is not ExecutionMode.EAGER:
-        return FallbackDecision(False, None, "only-compiled-to-eager-fallback-is-supported")
+    if target_key != source_key.with_mode(ExecutionMode.EAGER):
+        return FallbackDecision(False, None, "execution-identity-mismatch")
     record = registry.lookup(target_key)
     if record is None or not record.passed:
         return FallbackDecision(False, None, "target-mode-is-not-qualified")

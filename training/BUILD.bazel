@@ -29,6 +29,7 @@ py_library(
     imports = ["src"],
     deps = [
         "//models",
+        requirement("numpy"),
         requirement("pyyaml"),
         requirement("torch"),
     ],

@@ -92,6 +92,8 @@ def run_reference_recipe(
         seed=recipe.program.reproducibility.seed,
         token_count=recipe.dataset.token_count,
         atom_count=recipe.dataset.atom_count,
+        sigma_min=model.config.sigma_min,
+        sigma_max=model.config.sigma_max,
         shuffle=recipe.dataset.shuffle,
     )
     checkpoint_manager = DCPCheckpointManager(output / "checkpoints")

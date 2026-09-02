@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,21 @@ import (
 )
 
 var testInternalSecret = []byte("0123456789abcdef0123456789abcdef")
+
+func TestPublicHTTPServerDeadlineCoversReadAndMaximumHandlerWork(t *testing.T) {
+	launchTimeout := 10 * time.Second
+	artifactVerifyTimeout := 30 * time.Second
+	handlerTimeout := MinimumHandlerTimeout(launchTimeout, artifactVerifyTimeout)
+	server := NewPublicHTTPServer("127.0.0.1:0", http.NotFoundHandler(), handlerTimeout)
+	if handlerTimeout != 70*time.Second || server.ReadTimeout != 15*time.Second ||
+		server.WriteTimeout != handlerTimeout || server.ReadHeaderTimeout != 5*time.Second ||
+		server.IdleTimeout != 60*time.Second || server.MaxHeaderBytes != 32*1024 {
+		t.Fatalf("public server policy = %+v, minimum = %s", server, handlerTimeout)
+	}
+	if server.WriteTimeout < server.ReadTimeout+5*launchTimeout+5*time.Second {
+		t.Fatalf("write timeout %s does not cover read and launch rollback", server.WriteTimeout)
+	}
+}
 
 func TestInternalJobActionRequiresCanonicalRestartUniqueJobID(t *testing.T) {
 	id, action, matched := internalJobAction(
@@ -78,6 +95,48 @@ func TestHTTPRejectsForgedAndReplayedInternalIdentity(t *testing.T) {
 	handler.ServeHTTP(replayResponse, replay)
 	if replayResponse.Code != http.StatusForbidden {
 		t.Fatalf("replayed assertion status = %d", replayResponse.Code)
+	}
+}
+
+func TestInternalIdentityNonceCapacityIsTenantIsolated(t *testing.T) {
+	identity, err := NewInternalIdentityVerifier(testInternalSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	identity.now = func() time.Time { return now }
+	identity.nonces["tenant-a"] = &tenantNonceCache{nonces: make(map[string]time.Time, maximumNoncesPerTenant)}
+	for index := 0; index < maximumNoncesPerTenant; index++ {
+		identity.nonces["tenant-a"].nonces[fmt.Sprintf("occupied-%05d", index)] = now
+	}
+	signer, err := runtimegateway.NewInternalIdentitySigner(testInternalSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestFor := func(tenant string) *http.Request {
+		request := httptest.NewRequest(
+			http.MethodGet,
+			"/v1alpha1/tenants/"+tenant+"/projects/project-a/inference-jobs/"+testJobID,
+			nil,
+		)
+		if err := signer.Sign(request, runtimegateway.Claims{
+			Subject: "user-1", TenantID: tenant, Projects: map[string]bool{"project-a": true},
+		}, tenant, "project-a"); err != nil {
+			t.Fatal(err)
+		}
+		return request
+	}
+	if _, err := identity.Authenticate(requestFor("tenant-a")); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("saturated tenant error = %v", err)
+	}
+	if principal, err := identity.Authenticate(requestFor("tenant-b")); err != nil || principal.TenantID != "tenant-b" {
+		t.Fatalf("independent tenant authentication = (%+v, %v)", principal, err)
+	}
+	for nonce := range identity.nonces["tenant-a"].nonces {
+		identity.nonces["tenant-a"].nonces[nonce] = now.Add(-internalAssertionWindow - time.Second)
+	}
+	if principal, err := identity.Authenticate(requestFor("tenant-a")); err != nil || principal.TenantID != "tenant-a" {
+		t.Fatalf("expired capacity authentication = (%+v, %v)", principal, err)
 	}
 }
 

@@ -1,0 +1,14 @@
+name: pr-metadata
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    uses: mindclade/.github/.github/workflows/reusable-metadata-validation.yml@81176eb2f0a7260b169551604b2042a27e90ad5d
+    with:
+      source_revision: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
